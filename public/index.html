@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AurumOS" />
+  <meta name="theme-color" content="#090d16" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <title>AurumOS — Gold Setup Lab & Macro Co-Pilot</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            obsidian: '#090d16',
+            panel: '#111827',
+            card: '#161f33',
+            gold: '#eab308',
+            goldLight: '#fde047',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --sat: env(safe-area-inset-top, 12px);
+      --sab: env(safe-area-inset-bottom, 20px);
+    }
+    * {
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    input, textarea, pre, code {
+      user-select: text;
+    }
+    body {
+      background-color: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      padding-top: var(--sat);
+      padding-bottom: calc(78px + var(--sab));
+      overflow-x: hidden;
+    }
+    .bottom-nav {
+      padding-bottom: max(10px, var(--sab));
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .glass-card {
+      background: linear-gradient(145deg, rgba(22, 31, 51, 0.92), rgba(15, 23, 42, 0.95));
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .gold-glow {
+      box-shadow: 0 0 25px -5px rgba(234, 179, 8, 0.25);
+    }
+    /* Custom Scrollbar hide for horizontal pills */
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="min-h-screen antialiased">
+
+  <!-- TOP STICKY HUD BAR (iPhone Status Header) -->
+  <header class="sticky top-0 z-40 bg-[#090d16]/90 backdrop-blur-xl border-b border-slate-800/80 px-3.5 py-2.5">
+    <div class="max-w-md mx-auto flex items-center justify-between gap-2">
+      <!-- Brand + Live Gold Price -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-yellow-400 to-amber-600 flex items-center justify-center font-black text-slate-950 text-base shadow-lg shadow-yellow-500/20">
+          Au
+        </div>
+        <div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-xs font-bold tracking-wider text-yellow-400 uppercase">XAUUSD</span>
+            <span id="liveGoldPrice" class="text-sm font-black text-white font-mono">2,748.40</span>
+            <span id="liveGoldChange" class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">+0.64%</span>
+          </div>
+          <div class="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
+            <span id="activeSessionBadge" class="flex items-center gap-1 text-emerald-400 font-medium">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              NY Open Killzone
+            </span>
+            <span>•</span>
+            <span id="hudMacroBadge" class="font-semibold text-amber-300">Macro: +3 Bullish</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Action: Live TV Chart Toggle & News Status -->
+      <div class="flex items-center gap-1.5">
+        <button onclick="toggleChartDrawer()" class="px-2.5 py-1.5 rounded-lg bg-slate-800/90 border border-slate-700 text-[11px] font-semibold text-slate-200 active:scale-95 transition flex items-center gap-1">
+          <span>📈</span> <span>TV Chart</span>
+        </button>
+        <button onclick="switchTab('macro')" id="newsShieldPill" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold text-emerald-400 active:scale-95 transition">
+          🛡️ Clear
+        </button>
+      </div>
+    </div>
+
+    <!-- Collapsible Live TradingView XAUUSD Chart Drawer -->
+    <div id="tvChartDrawer" class="hidden max-w-md mx-auto mt-2.5 rounded-xl overflow-hidden border border-slate-700/80 bg-slate-950">
+      <div class="flex items-center justify-between px-3 py-1.5 bg-slate-900 text-[11px] text-slate-300 border-b border-slate-800">
+        <span class="font-semibold text-yellow-400">Live TradingView Chart — OANDA:XAUUSD (15m)</span>
+        <button onclick="toggleChartDrawer()" class="text-slate-400 hover:text-white font-bold px-1">✕ Close</button>
+      </div>
+      <div class="h-64 w-full" id="tv_chart_container">
+        <iframe
+          src="https://s.tradingview.com/widgetembed/?frameElementId=tradingview_xau&symbol=OANDA%3AXAUUSD&interval=15&hidesidetoolbar=1&symboledit=1&saveimage=0&toolbarbg=0f172a&studies=%5B%5D&theme=dark&style=1&timezone=America%2FNew_York"
+          style="width:100%;height:100%;border:0;"
+          allowtransparency="true"
+          scrolling="no">
+        </iframe>
+      </div>
+    </div>
+
+    <!-- Red-Folder News Emergency Lockout Banner (Hidden unless triggered) -->
+    <div id="redNewsBanner" class="hidden max-w-md mx-auto mt-2 px-3 py-2 rounded-xl bg-red-600/25 border border-red-500 text-red-200 text-xs flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-base animate-bounce">🚨</span>
+        <div>
+          <div class="font-bold text-red-300">RED-FOLDER USD NEWS LOCKOUT ACTIVE</div>
+          <div class="text-[11px] text-red-200/80">US CPI / NFP / FOMC Volatility Window — Execution Locked</div>
+        </div>
+      </div>
+      <button onclick="toggleNewsSimulation()" class="px-2 py-1 rounded bg-red-500/40 text-white text-[10px] font-bold">Disable</button>
+    </div>
+  </header>
+
+  <!-- MAIN VIEWPORT CONTAINER (iPhone Width Centered) -->
+  <main class="max-w-md mx-auto px-3.5 pt-3 space-y-4">
+
+    <!-- ===================================================================== -->
+    <!-- TAB 1: SETUP LAB (Côté Technique + Côté Macro Backtester + Pine Gen)  -->
+    <!-- ===================================================================== -->
+    <section id="tab-lab" class="space-y-3.5">
+      <!-- Hero Banner -->
+      <div class="glass-card rounded-2xl p-3.5 gold-glow">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-[10px] font-extrabold uppercase tracking-widest px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">Mode A • Instant Setup Lab</span>
+            <h1 class="text-base font-extrabold text-white mt-1">Multi-Setup & Macro Tester</h1>
+            <p class="text-xs text-slate-400">Toggle Côté Technique + Côté News/Macro to test edge & generate TradingView Pine Script.</p>
+          </div>
+        </div>
+
+        <!-- LIVE INSTANT BACKTEST SCORECARD -->
+        <div class="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-slate-800/90">
+          <div class="bg-slate-900/90 rounded-xl p-2 text-center border border-slate-800">
+            <div class="text-[10px] text-slate-400">Win Rate</div>
+            <div id="btWinRate" class="text-base font-black text-emerald-400 mt-0.5">68.4%</div>
+            <div id="btWinDelta" class="text-[9px] text-emerald-400/80">+16.2% vs Raw</div>
+          </div>
+          <div class="bg-slate-900/90 rounded-xl p-2 text-center border border-slate-800">
+            <div class="text-[10px] text-slate-400">Profit Factor</div>
+            <div id="btProfitFactor" class="text-base font-black text-yellow-400 mt-0.5">2.64</div>
+            <div id="btTradesCount" class="text-[9px] text-slate-400">142 Trades</div>
+          </div>
+          <div class="bg-slate-900/90 rounded-xl p-2 text-center border border-slate-800">
+            <div class="text-[10px] text-slate-400">Net Return</div>
+            <div id="btNetReturn" class="text-base font-black text-emerald-400 mt-0.5">+64.5R</div>
+            <div id="btNetCash" class="text-[9px] text-slate-400">+$64,500</div>
+          </div>
+          <div class="bg-slate-900/90 rounded-xl p-2 text-center border border-slate-800">
+            <div class="text-[10px] text-slate-400">Max DD</div>
+            <div id="btMaxDD" class="text-base font-black text-sky-400 mt-0.5">-3.8%</div>
+            <div class="text-[9px] text-emerald-400">Prop Safe ✅</div>
+          </div>
+        </div>
+
+        <!-- Equity Curve Comparison SVG (Tech + Macro vs Tech Only) -->
+        <div class="mt-3 bg-slate-950/90 rounded-xl p-2.5 border border-slate-800/80">
+          <div class="flex items-center justify-between text-[10px] mb-1.5">
+            <span class="font-bold text-slate-300">2-Year XAUUSD Backtest Curve</span>
+            <div class="flex items-center gap-3">
+              <span class="flex items-center gap-1 text-yellow-400 font-semibold"><span class="w-2 h-0.5 bg-yellow-400 inline-block"></span> With Macro Filters</span>
+              <span class="flex items-center gap-1 text-slate-500"><span class="w-2 h-0.5 bg-slate-500 inline-block"></span> Technical Only</span>
+            </div>
+          </div>
+          <svg id="equityCurveSvg" viewBox="0 0 320 75" class="w-full h-16 overflow-visible"></svg>
+        </div>
+      </div>
+
+      <!-- STEP 1: CÔTÉ TECHNIQUE (SETUP SELECTOR) -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-extrabold uppercase tracking-wider text-yellow-400">1. 🎯 Côté Technique — Choose Setup</h2>
+          <span class="text-[10px] text-slate-400">Tap to switch</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2" id="setupSelectorGrid">
+          <!-- Populated dynamically by app.js -->
+        </div>
+
+        <!-- Killzone Session Pills -->
+        <div class="pt-2 border-t border-slate-800/80">
+          <div class="text-[11px] font-semibold text-slate-300 mb-1.5">Active Killzone Sessions (EST)</div>
+          <div class="grid grid-cols-3 gap-1.5" id="sessionToggles"></div>
+        </div>
+
+        <!-- Technical Confluence Toggles -->
+        <div class="pt-2 border-t border-slate-800/80 space-y-2" id="techFilterToggles"></div>
+
+        <!-- Risk & Exit Profile -->
+        <div class="pt-2 border-t border-slate-800/80">
+          <div class="flex items-center justify-between text-[11px] mb-1.5">
+            <span class="font-semibold text-slate-300">Exit & R:R Strategy</span>
+            <span id="rrSelectedLabel" class="text-yellow-400 font-bold">2.5R + 50% Partial @ 1R (BE)</span>
+          </div>
+          <div class="grid grid-cols-3 gap-1.5" id="rrSelectorGrid"></div>
+          <label class="flex items-center justify-between mt-2.5 p-2 rounded-xl bg-slate-900/80 border border-slate-800 cursor-pointer">
+            <div>
+              <div class="text-xs font-bold text-white">50% Partial at 1R + Move SL to Breakeven</div>
+              <div class="text-[10px] text-slate-400">Smooths equity curve & protects against Gold reversals</div>
+            </div>
+            <input type="checkbox" id="togglePartialBE" checked onchange="updateLabConfig()" class="w-4 h-4 accent-yellow-400 rounded" />
+          </label>
+        </div>
+      </div>
+
+      <!-- STEP 2: CÔTÉ NEWS, MACRO & GÉOPOLITIQUE FILTERS -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-xs font-extrabold uppercase tracking-wider text-emerald-400">2. 🌍 Côté News, Macro & Géopolitique</h2>
+            <p class="text-[11px] text-slate-400">Filter out trades that fight the Fed, Inflation, Chômage, DXY & Wars</p>
+          </div>
+          <button onclick="switchTab('macro')" class="text-[10px] font-bold text-yellow-400 underline">Full Radar →</button>
+        </div>
+
+        <div id="macroFilterToggles" class="space-y-2">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+
+      <!-- STEP 3: 1-CLICK PINE SCRIPT GENERATOR & EXPORT -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-xs font-extrabold uppercase tracking-wider text-yellow-400">3. ⚡ TradingView Pine Script v5</h2>
+            <p class="text-[11px] text-slate-400">Auto-compiled with your exact Technical + Macro filters above</p>
+          </div>
+          <button onclick="copyPineScript()" id="copyPineBtn" class="px-3 py-1.5 rounded-xl bg-gradient-to-r from-yellow-400 to-amber-500 text-slate-950 font-extrabold text-xs shadow-md active:scale-95 transition">
+            📋 Copy Pine Script
+          </button>
+        </div>
+
+        <pre id="pineCodePreview" class="bg-slate-950 text-[10px] text-emerald-300 font-mono p-3 rounded-xl border border-slate-800 overflow-x-auto max-h-44 leading-relaxed"></pre>
+
+        <div class="flex gap-2">
+          <button onclick="sendLabSetupToTradePad()" class="w-full py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold text-xs active:scale-98 transition">
+            🚀 Load This Setup into Live Trade Pad →
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 2: MACRO, FED, INFLATION, CHÔMAGE & GEOPOLITICS RADAR             -->
+    <!-- ===================================================================== -->
+    <section id="tab-macro" class="hidden space-y-3.5">
+      <!-- Composite Macro Score Gauge -->
+      <div class="glass-card rounded-2xl p-3.5 gold-glow">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-[10px] font-extrabold uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Live Fundamental Bias</span>
+            <h2 class="text-base font-extrabold text-white mt-1">Gold (`XAUUSD`) Macro Engine</h2>
+          </div>
+          <div class="text-right">
+            <div id="macroScoreBig" class="text-2xl font-black text-emerald-400">+3 / +5</div>
+            <div id="macroBiasText" class="text-[11px] font-bold text-emerald-300">STRONG BULLISH BIAS</div>
+          </div>
+        </div>
+
+        <!-- Quick Regime Presets to Test Different Macro Environments -->
+        <div class="mt-3 pt-2.5 border-t border-slate-800">
+          <div class="text-[10px] font-semibold text-slate-400 mb-1.5">Simulate Macro / News Regime on Gold:</div>
+          <div class="flex gap-1.5 overflow-x-auto no-scrollbar pb-1">
+            <button onclick="applyMacroPreset('dovish_geo')" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-[11px] font-bold text-emerald-300">🕊️ Dovish Fed + War Risk (+5)</button>
+            <button onclick="applyMacroPreset('current')" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-yellow-500/20 border border-yellow-500/40 text-[11px] font-bold text-yellow-300">⚡ Current Regime (+3)</button>
+            <button onclick="applyMacroPreset('hot_cpi')" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-red-500/20 border border-red-500/40 text-[11px] font-bold text-red-300">🔥 Hot CPI + Strong NFP (-4)</button>
+            <button onclick="applyMacroPreset('neutral')" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-[11px] font-bold text-slate-300">⚖️ Mixed Chop (0)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- The 6 Fundamental Pillars (Interactive Cards) -->
+      <div class="space-y-2.5" id="macroPillarsList">
+        <!-- Populated by app.js -->
+      </div>
+
+      <!-- Red-Folder USD Economic Calendar + Kill Switch -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-xs font-extrabold uppercase tracking-wider text-red-400">🚨 Red-Folder USD & Gold Calendar</h3>
+            <p class="text-[11px] text-slate-400">Auto-locks execution 15m before & after Tier-1 releases</p>
+          </div>
+          <button onclick="toggleNewsSimulation()" id="simNewsBtn" class="px-2.5 py-1.5 rounded-lg bg-red-500/20 border border-red-500/40 text-red-300 text-[11px] font-bold active:scale-95 transition">
+            ⚡ Simulate CPI Now
+          </button>
+        </div>
+
+        <div class="space-y-2" id="economicCalendarList">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: TRADE PAD (Unlock-to-Trade Checklist + 1-Click XAUUSD Sizing)  -->
+    <!-- ===================================================================== -->
+    <section id="tab-trade" class="hidden space-y-3.5">
+      <!-- Step 1: Pre-Trade Framework Checklist Gatekeeper -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-[10px] font-bold text-yellow-400 uppercase tracking-wider">Step 1 • Mandatory Gatekeeper</span>
+            <h2 id="activePadSetupTitle" class="text-sm font-extrabold text-white">1. Asian Liquidity Sweep (SMC)</h2>
+          </div>
+          <div id="setupGradeBadge" class="px-2.5 py-1 rounded-xl font-black text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+            Grade: A+ (Unlocked)
+          </div>
+        </div>
+
+        <!-- Checklist Items -->
+        <div id="tradeChecklistContainer" class="space-y-1.5 pt-1">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+
+      <!-- Step 2: Precision XAUUSD Lot Size & Partial TP Calculator -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-extrabold uppercase tracking-wider text-yellow-400">Step 2 • XAUUSD Position Calculator</span>
+          <span class="text-[11px] text-slate-400">1 Lot = 100 oz ($1 = $100/lot)</span>
+        </div>
+
+        <!-- Account Size & Risk % Row -->
+        <div class="grid grid-cols-2 gap-2.5">
+          <div class="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
+            <label class="text-[10px] text-slate-400 block">Prop Account Balance ($)</label>
+            <select id="calcAccountSize" onchange="recalcOrderPad()" class="w-full bg-transparent text-sm font-black text-white mt-0.5 focus:outline-none">
+              <option value="10000">$10,000 Challenge</option>
+              <option value="25000">$25,000 Challenge</option>
+              <option value="50000">$50,000 Challenge</option>
+              <option value="100000" selected>$100,000 Funded</option>
+              <option value="200000">$200,000 Funded</option>
+            </select>
+          </div>
+          <div class="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
+            <label class="text-[10px] text-slate-400 block">Risk % (<span id="calcRiskDollar">$1,000</span>)</label>
+            <div class="flex gap-1 mt-1">
+              <button onclick="setRiskPct(0.25)" class="risk-pill flex-1 py-1 rounded text-[11px] font-bold bg-slate-800 text-slate-300">0.25%</button>
+              <button onclick="setRiskPct(0.5)" class="risk-pill flex-1 py-1 rounded text-[11px] font-bold bg-slate-800 text-slate-300">0.5%</button>
+              <button onclick="setRiskPct(1.0)" class="risk-pill flex-1 py-1 rounded text-[11px] font-bold bg-yellow-500 text-slate-950">1.0%</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stop Loss Distance Slider (Gold Dollars / Pips) -->
+        <div class="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
+          <div class="flex justify-between text-xs mb-1">
+            <span class="text-slate-400">Gold Stop Loss Distance:</span>
+            <span id="slDistLabel" class="font-black text-yellow-400">$4.00 (40 Pips)</span>
+          </div>
+          <input type="range" id="slDistSlider" min="1.5" max="15.0" step="0.5" value="4.0" oninput="recalcOrderPad()" class="w-full accent-yellow-400" />
+          <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
+            <span>Tight Scalp ($1.50)</span>
+            <span>Standard ($4.00)</span>
+            <span>Wide Swing ($15.00)</span>
+          </div>
+        </div>
+
+        <!-- Computed Output Box (Exact Lot Size + TP1 + TP2) -->
+        <div class="grid grid-cols-3 gap-2 bg-slate-950 p-3 rounded-xl border border-yellow-500/30">
+          <div>
+            <div class="text-[10px] text-slate-400">EXACT LOT SIZE</div>
+            <div id="outLotSize" class="text-xl font-black text-yellow-400 font-mono">2.50</div>
+            <div class="text-[10px] text-slate-400">Standard Lots</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-slate-400">TP1 (50% + BE)</div>
+            <div id="outTP1" class="text-sm font-bold text-emerald-400 font-mono">+$500 (1R)</div>
+            <div id="outTP1Price" class="text-[10px] text-slate-400">@ 2,752.40</div>
+          </div>
+          <div>
+            <div class="text-[10px] text-slate-400">FINAL TP2 (2.5R)</div>
+            <div id="outTP2" class="text-sm font-bold text-emerald-400 font-mono">+$1,750</div>
+            <div id="outTP2Price" class="text-[10px] text-slate-400">@ 2,758.40</div>
+          </div>
+        </div>
+
+        <!-- Execution Action Buttons -->
+        <div id="executionButtonsBox" class="grid grid-cols-2 gap-2.5 pt-1">
+          <button onclick="executeTrade('LONG')" class="py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 text-slate-950 font-black text-sm shadow-lg shadow-emerald-500/20 active:scale-95 transition">
+            🚀 EXECUTE LONG
+          </button>
+          <button onclick="executeTrade('SHORT')" class="py-3.5 rounded-xl bg-gradient-to-r from-rose-500 to-red-600 text-white font-black text-sm shadow-lg shadow-rose-500/20 active:scale-95 transition">
+            🔻 EXECUTE SHORT
+          </button>
+        </div>
+
+        <button onclick="copyMT5Ticket()" id="copyTicketBtn" class="w-full py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-xs font-semibold active:scale-95 transition">
+          📋 Copy Exact Ticket for MT5 / cTrader / TradingView
+        </button>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 4: JOURNAL & EDGE ANALYTICS (Auto-Logged Trades)                  -->
+    <!-- ===================================================================== -->
+    <section id="tab-journal" class="hidden space-y-3.5">
+      <!-- Cost of Indiscipline Hero Card -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-[10px] font-extrabold uppercase tracking-wider text-yellow-400">Behavioral Edge Audit</span>
+            <h2 class="text-base font-extrabold text-white">Rule Compliance vs. PnL</h2>
+          </div>
+          <span id="journalTotalPnL" class="text-lg font-black text-emerald-400">+$4,850</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2.5">
+          <div class="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-2.5">
+            <div class="text-[10px] font-bold text-emerald-300 uppercase">✅ A+ Setup + Macro Aligned</div>
+            <div id="compliantStats" class="text-base font-black text-white mt-1">73% Win • +$5,650</div>
+            <div class="text-[10px] text-emerald-300/80">Following your framework rules</div>
+          </div>
+          <div class="bg-rose-500/10 border border-rose-500/30 rounded-xl p-2.5">
+            <div class="text-[10px] font-bold text-rose-300 uppercase">❌ FOMO / Against Macro</div>
+            <div id="nonCompliantStats" class="text-base font-black text-white mt-1">25% Win • -$800</div>
+            <div class="text-[10px] text-rose-300/80">Skipping checklist or news shield</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Trade History Log -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs font-extrabold uppercase tracking-wider text-slate-300">Auto-Journaled Gold Trades</h3>
+          <span class="text-[10px] text-slate-400">Tap result to simulate outcome</span>
+        </div>
+        <div id="journalListContainer" class="space-y-2">
+          <!-- Populated by app.js -->
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- STICKY BOTTOM IPHONE TAB BAR -->
+  <nav class="bottom-nav fixed bottom-0 left-0 right-0 z-50 bg-[#090d16]/95 border-t border-slate-800/90 px-2 pt-2">
+    <div class="max-w-md mx-auto grid grid-cols-4 gap-1">
+      <button onclick="switchTab('lab')" id="nav-lab" class="flex flex-col items-center justify-center py-1 rounded-xl text-yellow-400">
+        <span class="text-lg leading-none">🧪</span>
+        <span class="text-[10px] font-bold mt-1">Setup Lab</span>
+      </button>
+      <button onclick="switchTab('macro')" id="nav-macro" class="flex flex-col items-center justify-center py-1 rounded-xl text-slate-400">
+        <span class="text-lg leading-none">🌍</span>
+        <span class="text-[10px] font-bold mt-1">Macro & News</span>
+      </button>
+      <button onclick="switchTab('trade')" id="nav-trade" class="flex flex-col items-center justify-center py-1 rounded-xl text-slate-400">
+        <span class="text-lg leading-none">⚡</span>
+        <span class="text-[10px] font-bold mt-1">Trade Pad</span>
+      </button>
+      <button onclick="switchTab('journal')" id="nav-journal" class="flex flex-col items-center justify-center py-1 rounded-xl text-slate-400">
+        <span class="text-lg leading-none">📊</span>
+        <span class="text-[10px] font-bold mt-1">Auto-Journal</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Toast Notification -->
+  <div id="toastBox" class="fixed top-16 left-1/2 -translate-x-1/2 z-50 hidden px-4 py-2.5 rounded-2xl bg-yellow-400 text-slate-950 font-extrabold text-xs shadow-2xl"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

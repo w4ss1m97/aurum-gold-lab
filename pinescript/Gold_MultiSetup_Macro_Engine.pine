@@ -1,0 +1,263 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// © AurumOS - Gold (XAUUSD) Multi-Setup & Macro/Geopolitical Strategy Tester
+//@version=5
+strategy("AurumOS: Gold Multi-Setup + Macro & News Tester", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.cash_per_order, commission_value=3.5, calc_on_every_tick=false)
+
+// ============================================================================
+// 1. CÔTÉ TECHNIQUE: SETUP SELECTOR & PARAMETERS
+// ============================================================================
+grp_setup = "1. 🎯 Côté Technique — Choice of Setup"
+setupType = input.string("1. Asian Liquidity Sweep (SMC)", "Select Setup to Test", options=["1. Asian Liquidity Sweep (SMC)", "2. Fair Value Gap (FVG) + Trend", "3. Session Opening Breakout (ORB)", "4. EMA 20/50 Cross + RSI Pullback"], group=grp_setup)
+tradeDirection = input.string("Both", "Allowed Trade Direction", options=["Both", "Long Only", "Short Only"], group=grp_setup)
+
+grp_tech = "2. ⚙️ Technical Filters (HTF & Volatility)"
+useHTFFilter   = input.bool(true, "Require HTF Trend Alignment (1H EMA 200)", group=grp_tech)
+htfTimeframe   = input.timeframe("60", "Higher Timeframe (HTF)", group=grp_tech)
+useATRFilter   = input.bool(true, "Filter Out Low-Volatility Chop (ATR Gate)", group=grp_tech)
+atrLength      = input.int(14, "ATR Length", group=grp_tech)
+
+// ============================================================================
+// 2. SESSIONS & KILLZONES (EST / NEW YORK TIME)
+// ============================================================================
+grp_sess = "3. 🕒 Killzone Sessions (New York Time)"
+allowLondon = input.bool(true, "Trade London Open (02:00 - 05:30 EST)", group=grp_sess)
+allowNYOpen = input.bool(true, "Trade NY Open / Silver Bullet (08:00 - 11:30 EST)", group=grp_sess)
+allowNYPM   = input.bool(false, "Trade NY Afternoon (13:30 - 16:00 EST)", group=grp_sess)
+
+// ============================================================================
+// 3. CÔTÉ NEWS, MACRO & GÉOPOLITIQUE (FEDS, INFLATION, CHÔMAGE, DXY, VIX)
+// ============================================================================
+grp_macro = "4. 🌍 Côté News, Macro & Géopolitique Filters"
+useDXYFilter        = input.bool(true, "Filter: DXY (US Dollar) Inverse Alignment", group=grp_macro)
+useFedYieldFilter   = input.bool(true, "Filter: Fed / US10Y Treasury Yields Inverse Alignment", group=grp_macro)
+useMacroEconFilter  = input.bool(false, "Filter: US Inflation (T10YIE) & Chômage (Jobless Claims)", group=grp_macro)
+useGeoShield        = input.bool(true, "Geopolitical Crisis Shield (Block Shorts When VIX Spikes)", group=grp_macro)
+useNewsBlackout     = input.bool(true, "Red-Folder News Lockout (Avoid 08:30 NFP/CPI & 14:00 FOMC)", group=grp_macro)
+
+// ============================================================================
+// 4. RISK MANAGEMENT, PARTIALS & R:R ENGINE
+// ============================================================================
+grp_risk = "5. 🛡️ Risk Management, R:R & Partial TPs"
+riskPercent     = input.float(1.0, "Account Risk Per Trade (%)", minval=0.1, maxval=5.0, step=0.25, group=grp_risk)
+slMode          = input.string("ATR Multiplier", "Stop Loss Calculation", options=["ATR Multiplier", "Swing High/Low", "Fixed Gold Points ($ value)"], group=grp_risk)
+slAtrMult       = input.float(1.5, "SL ATR Multiplier", minval=0.5, maxval=5.0, step=0.25, group=grp_risk)
+slFixedDollars  = input.float(4.0, "Fixed SL Distance ($ on Gold, e.g. 4.0 = 40 pips)", minval=1.0, maxval=25.0, step=0.5, group=grp_risk)
+rrTarget        = input.float(2.5, "Final Take Profit Target (R-Multiple)", minval=1.0, maxval=10.0, step=0.25, group=grp_risk)
+usePartialTP    = input.bool(true, "Take 50% Partial Profit at TP1 & Move SL to Breakeven", group=grp_risk)
+tp1Ratio        = input.float(1.0, "TP1 Trigger (R-Multiple for 50% Partial + BE)", minval=0.5, maxval=3.0, step=0.25, group=grp_risk)
+
+// ============================================================================
+// CORE CALCULATIONS: SESSIONS & ASIAN RANGE
+// ============================================================================
+inAsianSession  = not na(time(timeframe.period, "2000-0200", "America/New_York"))
+inLondonSession = not na(time(timeframe.period, "0200-0530", "America/New_York"))
+inNYOpenSession = not na(time(timeframe.period, "0800-1130", "America/New_York"))
+inNYPMSession   = not na(time(timeframe.period, "1330-1600", "America/New_York"))
+
+sessionAllowed = (allowLondon and inLondonSession) or (allowNYOpen and inNYOpenSession) or (allowNYPM and inNYPMSession)
+
+// Track Asian Session High & Low for Liquidity Sweeps
+var float asianHigh = na
+var float asianLow  = na
+if inAsianSession
+    if not inAsianSession[1]
+        asianHigh := high
+        asianLow  := low
+    else
+        asianHigh := math.max(nz(asianHigh, high), high)
+        asianLow  := math.min(nz(asianLow, low), low)
+
+// Track Opening Range (08:00 - 08:30 EST or 02:00 - 02:30 EST)
+inORBWindow = not na(time(timeframe.period, "0200-0230", "America/New_York")) or not na(time(timeframe.period, "0800-0830", "America/New_York"))
+var float orbHigh = na
+var float orbLow  = na
+if inORBWindow
+    if not inORBWindow[1]
+        orbHigh := high
+        orbLow  := low
+    else
+        orbHigh := math.max(nz(orbHigh, high), high)
+        orbLow  := math.min(nz(orbLow, low), low)
+
+// ============================================================================
+// CÔTÉ MACRO, FEDS, INFLATION, CHÔMAGE & GEOPOLITICS ENGINE
+// ============================================================================
+// 1. DXY (US Dollar Index) - Inverse to Gold
+dxyClose = request.security("TVC:DXY", timeframe.period, close, ignore_invalid_symbol=true)
+dxyEMA   = request.security("TVC:DXY", timeframe.period, ta.ema(close, 50), ignore_invalid_symbol=true)
+dxyBullishForGold = na(dxyClose) ? true : dxyClose < dxyEMA
+dxyBearishForGold = na(dxyClose) ? true : dxyClose > dxyEMA
+
+// 2. US 10-Year Treasury Yield (Fed Rate Expectations Proxy) - Inverse to Gold
+us10yClose = request.security("TVC:US10Y", "60", close, ignore_invalid_symbol=true)
+us10yEMA   = request.security("TVC:US10Y", "60", ta.ema(close, 50), ignore_invalid_symbol=true)
+yieldsBullishForGold = na(us10yClose) ? true : us10yClose < us10yEMA
+yieldsBearishForGold = na(us10yClose) ? true : us10yClose > us10yEMA
+
+// 3. Macro Economic Data: 10Y Breakeven Inflation (FRED:T10YIE) & Initial Jobless Claims / Chômage (FRED:ICSA)
+inflClose = request.security("FRED:T10YIE", "D", close, ignore_invalid_symbol=true)
+inflSMA   = request.security("FRED:T10YIE", "D", ta.sma(close, 20), ignore_invalid_symbol=true)
+claimsClose = request.security("FRED:ICSA", "W", close, ignore_invalid_symbol=true)
+claimsSMA   = request.security("FRED:ICSA", "W", ta.sma(close, 4), ignore_invalid_symbol=true)
+
+// Rising inflation expectations OR rising unemployment claims = Dovish Fed / Safe Haven = Bullish Gold
+econBullishForGold = (na(inflClose) ? true : inflClose >= inflSMA) or (na(claimsClose) ? true : claimsClose >= claimsSMA)
+econBearishForGold = (na(inflClose) ? true : inflClose < inflSMA) and (na(claimsClose) ? true : claimsClose < claimsSMA)
+
+// 4. Geopolitical Stress & Fear Index (CBOE:VIX)
+vixClose = request.security("CBOE:VIX", "60", close, ignore_invalid_symbol=true)
+vixSMA   = request.security("CBOE:VIX", "60", ta.sma(close, 50), ignore_invalid_symbol=true)
+geoPanicHigh = not na(vixClose) and (vixClose > vixSMA * 1.12 or vixClose > 22.0)
+
+// 5. Red-Folder News Blackout Window (08:20-08:45 EST for CPI/NFP/Jobless & 13:50-14:35 EST for FOMC)
+inTier1NewsWindow = not na(time(timeframe.period, "0820-0845", "America/New_York")) or not na(time(timeframe.period, "1350-1435", "America/New_York"))
+newsAllowed = not useNewsBlackout or not inTier1NewsWindow
+
+// Composite Macro Score (-4 to +4)
+macroScore = (dxyBullishForGold ? 1 : -1) + (yieldsBullishForGold ? 1 : -1) + (econBullishForGold ? 1 : -1) + (geoPanicHigh ? 1 : 0)
+
+macroLongOK  = (not useDXYFilter or dxyBullishForGold) and (not useFedYieldFilter or yieldsBullishForGold) and (not useMacroEconFilter or econBullishForGold) and newsAllowed
+macroShortOK = (not useDXYFilter or dxyBearishForGold) and (not useFedYieldFilter or yieldsBearishForGold) and (not useMacroEconFilter or econBearishForGold) and (not useGeoShield or not geoPanicHigh) and newsAllowed
+
+// ============================================================================
+// TECHNICAL INDICATORS & SETUP TRIGGERS
+// ============================================================================
+atrVal   = ta.atr(atrLength)
+atrAvg   = ta.sma(atrVal, 50)
+atrOK    = not useATRFilter or (atrVal > atrAvg * 0.7)
+
+htfClose = request.security(syminfo.tickerid, htfTimeframe, close)
+htfEMA   = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, 200))
+htfBull  = not useHTFFilter or (htfClose > htfEMA)
+htfBear  = not useHTFFilter or (htfClose < htfEMA)
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+rsiVal = ta.rsi(close, 14)
+
+// --- Setup 1: Asian Liquidity Sweep + Reclaim ---
+sweepLong  = not inAsianSession and not na(asianLow) and low < asianLow and close > asianLow and close > open
+sweepShort = not inAsianSession and not na(asianHigh) and high > asianHigh and close < asianHigh and close < open
+
+// --- Setup 2: Fair Value Gap (FVG) + Momentum ---
+bullFVG = low > high[2] and close[1] > open[1] and (close[1] - open[1]) > atrVal * 0.8
+bearFVG = high < low[2] and close[1] < open[1] and (open[1] - close[1]) > atrVal * 0.8
+fvgLong  = bullFVG and close > ema50
+fvgShort = bearFVG and close < ema50
+
+// --- Setup 3: Session Opening Range Breakout (ORB) ---
+orbLong  = not inORBWindow and not na(orbHigh) and ta.crossover(close, orbHigh)
+orbShort = not inORBWindow and not na(orbLow) and ta.crossunder(close, orbLow)
+
+// --- Setup 4: EMA 20/50 Trend + RSI Pullback ---
+emaLong  = ema20 > ema50 and low <= ema20 and close > ema20 and close > open and rsiVal > 45 and rsiVal < 70
+emaShort = ema20 < ema50 and high >= ema20 and close < ema20 and close < open and rsiVal < 55 and rsiVal > 30
+
+// Select Active Trigger
+rawLong  = setupType == "1. Asian Liquidity Sweep (SMC)" ? sweepLong  : setupType == "2. Fair Value Gap (FVG) + Trend" ? fvgLong  : setupType == "3. Session Opening Breakout (ORB)" ? orbLong  : emaLong
+rawShort = setupType == "1. Asian Liquidity Sweep (SMC)" ? sweepShort : setupType == "2. Fair Value Gap (FVG) + Trend" ? fvgShort : setupType == "3. Session Opening Breakout (ORB)" ? orbShort : emaShort
+
+longCondition  = rawLong  and sessionAllowed and htfBull and atrOK and macroLongOK  and (tradeDirection != "Short Only") and strategy.position_size == 0
+shortCondition = rawShort and sessionAllowed and htfBear and atrOK and macroShortOK and (tradeDirection != "Long Only")  and strategy.position_size == 0
+
+// ============================================================================
+// POSITION SIZING, STOP LOSS, PARTIAL TP1 & BREAKEVEN EXECUTION
+// ============================================================================
+swingLow  = ta.lowest(low, 10)
+swingHigh = ta.highest(high, 10)
+
+calcSLDistance(isLong) =>
+    dist = slMode == "ATR Multiplier" ? atrVal * slAtrMult : slMode == "Fixed Gold Points ($ value)" ? slFixedDollars : isLong ? math.max(close - swingLow, atrVal * 0.5) : math.max(swingHigh - close, atrVal * 0.5)
+    math.max(dist, syminfo.mintick * 10)
+
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var bool  tp1Hit      = false
+
+if longCondition
+    slDist      = calcSLDistance(true)
+    activeEntry := close
+    activeSL    := close - slDist
+    activeTP1   := close + (slDist * tp1Ratio)
+    activeTP2   := close + (slDist * rrTarget)
+    tp1Hit      := false
+    riskCash    = strategy.equity * (riskPercent / 100.0)
+    qtyLots     = math.max(riskCash / (slDist * syminfo.pointvalue), syminfo.mintick)
+    strategy.entry("Long", strategy.long, qty=qtyLots, comment="LONG [" + str.tostring(macroScore) + "]")
+
+if shortCondition
+    slDist      = calcSLDistance(false)
+    activeEntry := close
+    activeSL    := close + slDist
+    activeTP1   := close - (slDist * tp1Ratio)
+    activeTP2   := close - (slDist * rrTarget)
+    tp1Hit      := false
+    riskCash    = strategy.equity * (riskPercent / 100.0)
+    qtyLots     = math.max(riskCash / (slDist * syminfo.pointvalue), syminfo.mintick)
+    strategy.entry("Short", strategy.short, qty=qtyLots, comment="SHORT [" + str.tostring(macroScore) + "]")
+
+// Manage Open Positions (TP1 50% Partial + Move SL to Breakeven)
+if strategy.position_size > 0
+    if usePartialTP and not tp1Hit and high >= activeTP1
+        tp1Hit   := true
+        activeSL := activeEntry // Move Stop Loss to Breakeven!
+    if usePartialTP
+        strategy.exit("TP1-Long", "Long", qty_percent=50, limit=activeTP1, stop=activeSL)
+        strategy.exit("TP2-Long", "Long", limit=activeTP2, stop=activeSL)
+    else
+        strategy.exit("Exit-Long", "Long", limit=activeTP2, stop=activeSL)
+
+if strategy.position_size < 0
+    if usePartialTP and not tp1Hit and low <= activeTP1
+        tp1Hit   := true
+        activeSL := activeEntry // Move Stop Loss to Breakeven!
+    if usePartialTP
+        strategy.exit("TP1-Short", "Short", qty_percent=50, limit=activeTP1, stop=activeSL)
+        strategy.exit("TP2-Short", "Short", limit=activeTP2, stop=activeSL)
+    else
+        strategy.exit("Exit-Short", "Short", limit=activeTP2, stop=activeSL)
+
+// ============================================================================
+// VISUAL PLOTS & ON-CHART INSTITUTIONAL HUD TABLE
+// ============================================================================
+plot(asianHigh, "Asian High", color=color.new(color.amber, 40), style=plot.style_linebr)
+plot(asianLow,  "Asian Low",  color=color.new(color.aqua, 40),  style=plot.style_linebr)
+plot(ema20,     "EMA 20",     color=color.new(color.teal, 50))
+plot(ema50,     "EMA 50",     color=color.new(color.orange, 50))
+
+var table hud = table.new(position.top_right, 2, 9, bgcolor=color.new(#0f172a, 10), border_color=color.new(#334155, 40), border_width=1)
+if barstate.islast
+    totalTrades = strategy.closedtrades
+    winTrades   = strategy.wintrades
+    winRate     = totalTrades > 0 ? (winTrades / totalTrades) * 100.0 : 0.0
+    pf          = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0.0
+    netReturn   = ((strategy.equity - strategy.initial_capital) / strategy.initial_capital) * 100.0
+
+    table.cell(hud, 0, 0, "🏆 AURUM OS — GOLD LAB", text_color=color.amber, text_size=size.small, bgcolor=color.new(#1e293b, 0))
+    table.cell(hud, 1, 0, setupType, text_color=color.white, text_size=size.small, bgcolor=color.new(#1e293b, 0))
+
+    table.cell(hud, 0, 1, "Win Rate / Trades", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 1, str.tostring(winRate, "#.1") + "% (" + str.tostring(totalTrades) + ")", text_color=winRate >= 50 ? color.lime : color.orange, text_size=size.small)
+
+    table.cell(hud, 0, 2, "Profit Factor / Net %", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 2, str.tostring(pf, "#.2") + " | " + str.tostring(netReturn, "+#.1") + "%", text_color=pf >= 1.5 ? color.lime : color.white, text_size=size.small)
+
+    table.cell(hud, 0, 3, "DXY (US Dollar)", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 3, dxyBullishForGold ? "Weak DXY (Bullish Gold)" : "Strong DXY (Bearish Gold)", text_color=dxyBullishForGold ? color.lime : color.red, text_size=size.tiny)
+
+    table.cell(hud, 0, 4, "Fed / US10Y Yields", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 4, yieldsBullishForGold ? "Yields Falling (Bullish Gold)" : "Yields Rising (Bearish Gold)", text_color=yieldsBullishForGold ? color.lime : color.red, text_size=size.tiny)
+
+    table.cell(hud, 0, 5, "Inflation & Chômage", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 5, econBullishForGold ? "Dovish / Pro-Gold" : "Hawkish / Tightening", text_color=econBullishForGold ? color.lime : color.orange, text_size=size.tiny)
+
+    table.cell(hud, 0, 6, "Geopolitics (VIX)", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 6, geoPanicHigh ? "⚠️ HIGH FEAR (Safe Haven)" : "Normal Regime", text_color=geoPanicHigh ? color.amber : color.silver, text_size=size.tiny)
+
+    table.cell(hud, 0, 7, "News Shield Status", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 7, inTier1NewsWindow ? "🛑 RED NEWS WINDOW" : "✅ Clear to Trade", text_color=inTier1NewsWindow ? color.red : color.lime, text_size=size.tiny)
+
+    table.cell(hud, 0, 8, "Composite Macro Score", text_color=color.gray, text_size=size.tiny)
+    table.cell(hud, 1, 8, str.tostring(macroScore, "+#") + " / +4", text_color=macroScore > 0 ? color.lime : macroScore < 0 ? color.red : color.white, text_size=size.small)
