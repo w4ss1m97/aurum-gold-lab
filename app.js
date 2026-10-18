@@ -4,24 +4,19 @@
 
 const state = {
   activeTab: 'lab',
-  prices: { XAU: null, XAG: null },
   redNewsLockoutActive: false,
 
   // 1. Backtest Lab configuration (persisted per device)
   lab: {
     market: 'XAU',
     strategyId: 'crt',
-    setupTF: 'H4',
-    entryTF: 'M15',
-    period: '3M',
+    setupTF: 'H1',
+    period: '6M',
     rr: 2,
     partialBE: true,
     newsFilter: false,
     cfgByStrategy: {},
-    results: null,
-    running: false,
-    status: '',
-    showAllTrades: false,
+    generated: null,
   },
 
   // 2. Live Macro, Fed, Inflation, Chômage & Geopolitics Regime State
@@ -189,23 +184,27 @@ function showToast(msg) {
 }
 
 // ============================================================================
-// TAB 1: BACKTEST LAB — real candles (Twelve Data) × Firas methods
+// TAB 1: PINE SCRIPT LAB — generate a TradingView strategy for a Firas method,
+// with a guide, expert tips and the red-folder news of the test window.
 // ============================================================================
 const PERIODS = { '1M': 30, '3M': 91, '6M': 182, '1Y': 365 };
 const DAY_MS = 24 * 3600 * 1000;
 const SETUP_TFS = ['H1', 'H4', 'D1'];
-const ENTRY_TFS = ['SAME', 'M5', 'M15', 'H1'];
-const M5_MAX_DAYS = 91; // keeps M5 downloads within the free API limits
 
 const LAB_PREFS_KEY = 'aurum.lab.prefs';
 function saveLabPrefs() {
-  const { market, strategyId, setupTF, entryTF, period, rr, partialBE, newsFilter, cfgByStrategy } = state.lab;
-  try { localStorage.setItem(LAB_PREFS_KEY, JSON.stringify({ market, strategyId, setupTF, entryTF, period, rr, partialBE, newsFilter, cfgByStrategy })); } catch (e) { /* ignore */ }
+  const { market, strategyId, setupTF, period, rr, partialBE, newsFilter, cfgByStrategy } = state.lab;
+  try { localStorage.setItem(LAB_PREFS_KEY, JSON.stringify({ market, strategyId, setupTF, period, rr, partialBE, newsFilter, cfgByStrategy })); } catch (e) { /* ignore */ }
 }
 function loadLabPrefs() {
   try {
     const p = JSON.parse(localStorage.getItem(LAB_PREFS_KEY) || 'null');
-    if (p && Aurum.STRATEGIES[p.strategyId]) Object.assign(state.lab, p);
+    if (!p || !Aurum.STRATEGIES[p.strategyId]) return;
+    const { market, strategyId, setupTF, period, rr, partialBE, newsFilter, cfgByStrategy } = p;
+    Object.assign(state.lab, { market, strategyId, partialBE: !!partialBE, newsFilter: !!newsFilter, cfgByStrategy: cfgByStrategy || {} });
+    if (SETUP_TFS.includes(setupTF)) state.lab.setupTF = setupTF;
+    if (PERIODS[period]) state.lab.period = period;
+    if (rr === 'struct' || [1.5, 2, 3].includes(rr)) state.lab.rr = rr;
   } catch (e) { /* ignore */ }
 }
 
@@ -215,27 +214,61 @@ function currentCfg() {
   if (!state.lab.cfgByStrategy[id]) state.lab.cfgByStrategy[id] = Aurum.strategy.defaultConfig(id);
   return state.lab.cfgByStrategy[id];
 }
-function entryAllowed(tf) {
-  if (tf === 'SAME') return true;
-  return Aurum.TIMEFRAMES[tf].ms < Aurum.TIMEFRAMES[state.lab.setupTF].ms;
-}
-function periodAllowed(p) {
-  return !(state.lab.entryTF === 'M5' && PERIODS[p] > M5_MAX_DAYS);
-}
-function tfLabel(tf) { return tf === 'SAME' ? 'Same TF' : Aurum.TIMEFRAMES[tf].label; }
+function tfLabel(tf) { return Aurum.TIMEFRAMES[tf].label; }
 
-function seg(items, activeVal, onclick, labelFn, disabledFn) {
+function seg(items, activeVal, onclick, labelFn) {
   return items.map((v) => {
-    const active = v === activeVal;
-    const disabled = disabledFn ? disabledFn(v) : false;
-    const cls = disabled
-      ? 'bg-slate-900/40 border-slate-800/60 text-slate-600 cursor-not-allowed'
-      : active
-      ? 'bg-yellow-400 border-yellow-400 text-slate-950'
-      : 'bg-slate-900 border-slate-700 text-slate-200 active:scale-95';
-    return `<button ${disabled ? 'disabled' : `onclick="${onclick}('${v}')"`} class="flex-1 h-11 rounded-xl border text-sm font-bold transition ${cls}">${labelFn ? labelFn(v) : v}</button>`;
+    const active = String(v) === String(activeVal);
+    const cls = active ? 'bg-yellow-400 border-yellow-400 text-slate-950' : 'bg-slate-900 border-slate-700 text-slate-200 active:scale-95';
+    return `<button onclick="${onclick}('${v}')" class="flex-1 h-11 rounded-xl border text-sm font-bold transition ${cls}">${labelFn ? labelFn(v) : v}</button>`;
   }).join('');
 }
+
+// Expert tips per method (from the PDFs' "points faibles / points forts").
+const METHOD_TIPS = {
+  crt: {
+    best: 'Use it on 4H or Daily candles: the bigger the reference candle, the more liquidity its sweep takes.',
+    tips: [
+      'Candle 1 must come after a correction made of small candles. If the correction itself is impulsive, skip it.',
+      'Watch for FVGs and breakouts inside the correction: they show strength against your trade.',
+      'Weak point: candle 3 can manipulate again toward other liquidity (BSL / SSL), and CRT does not always respect the OTE zone. That is why the stop sits beyond candle 2\'s wick, never inside it.',
+      'Manually, you would refine the entry on a lower timeframe FVG / IFVG. The script enters at the next candle open, so manual results can be a bit better.',
+    ],
+  },
+  hiddenDivOte: {
+    best: 'Best on 1H and 4H, in the direction of the bigger trend.',
+    tips: [
+      'Long: support + hidden bullish divergence (price higher low, RSI lower low) + OTE zone + OB or FVG + confirmation candle. Short: the mirror image at resistance.',
+      'The divergence is measured on RSI 14 between the impulse low and the pullback low.',
+      'No confirmation candle = no trade. The backtest showed this rule carries most of the edge.',
+      'A correction with big impulsive candles or an FVG against you is a warning sign (the "Correction propre" filter).',
+    ],
+  },
+  doubleTop: {
+    best: 'Best on 1H / 4H after a clean impulse leg.',
+    tips: [
+      'The two tops (or bottoms) must form inside the OTE zone of the previous leg: 62% – 79%.',
+      'Watch the 38.2% level: it is weak support but can be risky, because a double bottom can form there instead.',
+      'Strong point: a new minor double top on the lower timeframe confirms the entry. Check it by eye on 15m before taking a trade.',
+      'Avoid corrections made of impulsive candles, and watch for FVGs and breakouts.',
+    ],
+  },
+  oteSmt: {
+    best: 'Run it on gold (OANDA:XAUUSD) with silver as the pair, on 1H or 4H.',
+    tips: [
+      'Gold and silver usually move together. SMT divergence = one makes a lower low (or higher high) and the other refuses. This shows smart money accumulating.',
+      'The OTE zone (62% – 79% Fibonacci) is the "optimal trade entry": low risk, high reward.',
+      'Firas OTE method: resistance / support + hidden divergence + OTE + OB or FVG + confirmation candle. Turn on "Divergence cachée" in the settings to test the full version.',
+      'If silver data is missing on your plan, the SMT check cannot pass. Change the pair symbol in the settings.',
+    ],
+  },
+};
+
+const NEWS_EXPLAIN = {
+  FOMC: 'Fed rate decision (14:00 New York / 20:00 Paris, press conference 30 min later). Hawkish (higher rates) = USD up = gold down. Dovish (cuts) = gold up. Spikes both ways in seconds.',
+  CPI: 'US inflation (08:30 New York / 14:30 Paris). Hotter than forecast = USD up = gold down. Cooler = gold up.',
+  NFP: 'US jobs report (08:30 New York / 14:30 Paris, usually the first Friday). Strong jobs = USD up = gold down. Weak jobs / rising unemployment (chômage) = gold up.',
+};
 
 function renderSetupLab() {
   const L = state.lab;
@@ -246,7 +279,7 @@ function renderSetupLab() {
     const active = L.market === m.id;
     return `<button onclick="labSet('market','${m.id}')" class="flex-1 rounded-2xl border p-3 text-left transition active:scale-95 ${active ? 'bg-yellow-400/15 border-yellow-400' : 'bg-slate-900 border-slate-700'}">
       <div class="text-base font-bold ${active ? 'text-yellow-300' : 'text-white'}">${m.id === 'XAU' ? '🥇' : '🥈'} ${m.name}</div>
-      <div class="text-xs text-slate-400 mt-0.5">${m.ticker}</div>
+      <div class="text-xs text-slate-400 mt-0.5">OANDA:${m.ticker}</div>
     </button>`;
   }).join('');
 
@@ -263,10 +296,8 @@ function renderSetupLab() {
   }).join('');
 
   document.getElementById('labSetupTF').innerHTML = seg(SETUP_TFS, L.setupTF, 'labSetTF', tfLabel);
-  document.getElementById('labEntryTF').innerHTML = seg(ENTRY_TFS, L.entryTF, 'labSetEntry', tfLabel, (v) => !entryAllowed(v));
-  document.getElementById('labPeriod').innerHTML = seg(Object.keys(PERIODS), L.period, 'labSetPeriod', null, (v) => !periodAllowed(v));
-  document.getElementById('labPeriodNote').textContent = L.entryTF === 'M5' ? '5m entries are limited to 3 months of history (free API limits).' : '';
-  document.getElementById('labRR').innerHTML = seg(['1.5', '2', '3', 'struct'], String(L.rr), 'labSetRR', (v) => (v === 'struct' ? 'Structure' : `1:${v}`));
+  document.getElementById('labPeriod').innerHTML = seg(Object.keys(PERIODS), L.period, 'labSetPeriod');
+  document.getElementById('labRR').innerHTML = seg(['1.5', '2', '3', 'struct'], L.rr, 'labSetRR', (v) => (v === 'struct' ? 'Structure' : `1:${v}`));
   document.getElementById('labPartial').checked = L.partialBE;
   document.getElementById('labNews').checked = L.newsFilter;
 
@@ -280,40 +311,22 @@ function renderSetupLab() {
 
   document.getElementById('labRules').innerHTML = strat.rules.map((r, i) => `<li class="flex gap-2"><span class="text-yellow-400 font-bold">${i + 1}.</span><span>${r}</span></li>`).join('');
 
-  const key = Aurum.data.getApiKey();
-  document.getElementById('apiKeyInput').value = key ? '••••••••' + key.slice(-4) : '';
-  document.getElementById('apiKeyState').innerHTML = key
-    ? '<span class="text-emerald-400 font-semibold">Key saved on this device ✓</span>'
-    : '<span class="text-amber-300 font-semibold">No key yet — backtests need one (free).</span>';
-
-  const busy = L.running;
-  document.getElementById('runBtn').disabled = busy;
-  document.getElementById('compareBtn').disabled = busy;
-  document.getElementById('runBtn').classList.toggle('opacity-60', busy);
-  document.getElementById('compareBtn').classList.toggle('opacity-60', busy);
-  document.getElementById('labStatus').textContent = L.status || '';
-
-  renderLabResults();
+  renderPineOut();
 }
 
-function labSet(field, val) {
-  state.lab[field] = val;
-  state.lab.results = null;
-  if (field === 'strategyId') { state.pad.checks = [true, true, true, true, true]; renderTradePad(); }
-  if (field === 'market') { updateHeaderMarket(); recalcOrderPad(); }
+// Any change makes the generated script stale until the button is pressed again.
+function labChanged() {
+  state.lab.generated = null;
   saveLabPrefs();
   renderSetupLab();
 }
-function labSetTF(tf) {
-  state.lab.setupTF = tf;
-  if (!entryAllowed(state.lab.entryTF)) state.lab.entryTF = 'SAME';
-  labSet('setupTF', tf);
+function labSet(field, val) {
+  state.lab[field] = val;
+  if (field === 'strategyId') { state.pad.checks = [true, true, true, true, true]; renderTradePad(); }
+  if (field === 'market') { updateHeaderMarket(); recalcOrderPad(); }
+  labChanged();
 }
-function labSetEntry(tf) {
-  state.lab.entryTF = tf;
-  if (!periodAllowed(state.lab.period)) state.lab.period = '3M';
-  labSet('entryTF', tf);
-}
+function labSetTF(tf) { labSet('setupTF', tf); }
 function labSetPeriod(p) { labSet('period', p); }
 function labSetRR(v) { labSet('rr', v === 'struct' ? 'struct' : parseFloat(v)); recalcOrderPad(); }
 function labToggleNews() { labSet('newsFilter', document.getElementById('labNews').checked); }
@@ -321,294 +334,140 @@ function labTogglePartial() { labSet('partialBE', document.getElementById('labPa
 function labToggleConf(key) {
   const cfg = currentCfg();
   cfg[key] = !cfg[key];
-  state.lab.results = null;
-  saveLabPrefs();
-  renderSetupLab();
+  labChanged();
 }
 
-function saveApiKey() {
-  const v = document.getElementById('apiKeyInput').value.trim();
-  if (!v || v.startsWith('••')) { showToast('Paste your Twelve Data API key first'); return; }
-  Aurum.data.setApiKey(v);
-  showToast('API key saved on this device');
-  renderSetupLab();
-  refreshLivePrices();
-}
-async function clearMarketCache() {
-  await Aurum.data.clearCache();
-  showToast('Downloaded candles cleared');
-}
-
-function setLabStatus(msg) {
-  state.lab.status = msg;
-  const el = document.getElementById('labStatus');
-  if (el) el.textContent = msg;
-}
-
-async function runLab(compareAll) {
+function generatePine() {
   const L = state.lab;
-  if (!Aurum.data.getApiKey()) {
-    document.getElementById('dataSettings').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    showToast('Add your free Twelve Data API key to run backtests');
-    return;
-  }
-  const strat = currentStrategy();
-  const cfg = { ...currentCfg() };
-  const htfMs = Aurum.TIMEFRAMES[L.setupTF].ms;
-  const sameTF = L.entryTF === 'SAME';
-  const periods = compareAll ? Object.keys(PERIODS).filter(periodAllowed) : [L.period];
-  const maxDays = Math.max(...periods.map((p) => PERIODS[p]));
-  const now = Date.now();
-  const histStart = now - maxDays * DAY_MS;
-
-  L.running = true;
-  setLabStatus('Preparing…');
-  renderSetupLab();
-  try {
-    const onStatus = (m) => setLabStatus(m);
-    const htf = await Aurum.data.getBars(L.market, L.setupTF, histStart - 120 * htfMs, onStatus);
-    const ltf = sameTF ? null : await Aurum.data.getBars(L.market, L.entryTF, histStart - 4 * htfMs, onStatus);
-    const pairId = Aurum.MARKETS[L.market].pair;
-    const pairHtf = strat.needsPair && cfg.smt ? await Aurum.data.getBars(pairId, L.setupTF, histStart - 120 * htfMs, onStatus) : null;
-    if (htf.length < 80) throw new Error('Not enough candles returned for this timeframe');
-    setLabStatus('Running backtest…');
-    await new Promise((r) => setTimeout(r, 30));
-
-    const base = {
-      strategy: strat, htf, ltf, pairHtf, htfMs,
-      ltfMs: sameTF ? 0 : Aurum.TIMEFRAMES[L.entryTF].ms,
-      rr: L.rr, partialBE: L.partialBE, newsFilter: L.newsFilter, spread: Aurum.MARKETS[L.market].spread, riskPct: 1,
-    };
-    const startFor = (p) => now - PERIODS[p] * DAY_MS;
-    const main = Aurum.backtest.run({ ...base, cfg, startMs: startFor(L.period) });
-
-    const compare = compareAll
-      ? periods.map((p) => ({ period: p, stats: Aurum.backtest.run({ ...base, cfg, startMs: startFor(p) }).stats }))
-      : null;
-
-    const ablation = strat.confluences.filter((c) => cfg[c.key]).map((c) => ({
-      label: c.label,
-      stats: Aurum.backtest.run({ ...base, cfg: { ...cfg, [c.key]: false }, startMs: startFor(L.period) }).stats,
-    }));
-    const allOff = {};
-    strat.confluences.forEach((c) => (allOff[c.key] = false));
-    ablation.push({ label: 'Pattern only (no confluences)', stats: Aurum.backtest.run({ ...base, cfg: allOff, startMs: startFor(L.period) }).stats });
-    ablation.push({
-      label: L.newsFilter ? 'Without news filter' : 'With news filter (skip red news)',
-      stats: Aurum.backtest.run({ ...base, newsFilter: !L.newsFilter, cfg, startMs: startFor(L.period) }).stats,
-    });
-
-    const analysis = Aurum.analysis.analyze({
-      trades: main.trades, stats: main.stats, htf, htfMs, htfLabel: tfLabel(L.setupTF),
-      market: Aurum.MARKETS[L.market], startMs: startFor(L.period),
-      compare, ablation, newsSkipped: main.newsSkipped, newsFilter: L.newsFilter,
-    });
-
-    L.results = {
-      ...main, compare, ablation, analysis,
-      meta: {
-        market: L.market, strategyId: L.strategyId, setupTF: L.setupTF, entryTF: L.entryTF,
-        period: L.period, rr: L.rr, partialBE: L.partialBE, newsFilter: L.newsFilter,
-        from: htf.length ? startFor(L.period) : now, to: htf[htf.length - 1].t,
-      },
-    };
-    L.showAllTrades = false;
-    setLabStatus('');
-  } catch (e) {
-    const msg = e.message === 'NO_KEY' ? 'Add your API key first' : e.message;
-    setLabStatus(`⚠️ ${msg}`);
-    showToast(msg);
-  } finally {
-    L.running = false;
-    renderSetupLab();
-    if (L.results) document.getElementById('labResults').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+  const code = Aurum.pine.generate({
+    strategyId: L.strategyId, cfg: currentCfg(), market: L.market, rr: L.rr, partialBE: L.partialBE,
+    period: L.period, setupTFLabel: tfLabel(L.setupTF), newsFilter: L.newsFilter,
+  });
+  L.generated = { code, at: Date.now(), snapshot: { ...L, cfg: { ...currentCfg() } } };
+  renderPineOut();
+  document.getElementById('pineOut').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  showToast('✅ Pine Script ready — tap Copy');
 }
 
-const fmtR = (r) => `${r >= 0 ? '+' : ''}${r.toFixed(1)}R`;
-const fmtPF = (pf) => (isFinite(pf) ? pf.toFixed(2) : '∞');
-const fmtDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
-const fmtDateTime = (ms) => new Date(ms).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+function copyText(txt) {
+  // iOS Safari: the Clipboard API needs HTTPS; fall back to a selected textarea + execCommand.
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(txt).then(() => true, () => legacyCopy(txt));
+  return Promise.resolve(legacyCopy(txt));
+}
+function legacyCopy(txt) {
+  const ta = document.createElement('textarea');
+  ta.value = txt;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;font-size:16px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.setSelectionRange(0, txt.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+function copyPineScript() {
+  const G = state.lab.generated;
+  if (!G) return;
+  copyText(G.code).then((ok) => {
+    showToast(ok ? '✅ Copied — paste it in TradingView\'s Pine Editor' : 'Copy blocked — open "Show the code" and copy it by hand');
+    const btn = document.getElementById('copyPineBtn');
+    if (ok && btn) { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '📋 Copy Pine Script'; }, 2000); }
+  });
+}
 
-function statTile(label, value, sub, color) {
-  return `<div class="bg-slate-900 rounded-2xl p-3 border border-slate-800">
-    <div class="text-xs text-slate-400">${label}</div>
-    <div class="text-2xl font-extrabold mt-0.5 ${color}">${value}</div>
-    <div class="text-xs text-slate-500 mt-0.5">${sub}</div>
+const fmtDateTime = (ms) => new Date(ms).toLocaleString(undefined, { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+function guideCard(title, body) {
+  return `<div class="rounded-2xl bg-slate-900 border border-slate-800 p-3">
+    <div class="text-base font-bold text-white">${title}</div>
+    <div class="mt-2 text-sm text-slate-300 leading-snug">${body}</div>
   </div>`;
 }
 
-function equitySvg(curve) {
-  const W = 320, H = 130, pad = 8;
-  if (curve.length < 2) return `<div class="h-32 flex items-center justify-center text-sm text-slate-500">No trades to draw</div>`;
-  const min = Math.min(0, ...curve), max = Math.max(0, ...curve);
-  const span = max - min || 1;
-  const x = (i) => pad + (i / (curve.length - 1)) * (W - 2 * pad);
-  const y = (v) => H - pad - ((v - min) / span) * (H - 2 * pad);
-  const pts = curve.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  const up = curve[curve.length - 1] >= 0;
-  const col = up ? '#34d399' : '#fb7185';
-  return `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36">
-    <line x1="${pad}" x2="${W - pad}" y1="${y(0)}" y2="${y(0)}" stroke="#475569" stroke-width="1" stroke-dasharray="4,4"/>
-    <text x="${W - pad}" y="${y(0) - 4}" text-anchor="end" font-size="10" fill="#64748b">0R</text>
-    <polygon points="${x(0)},${y(0)} ${pts} ${x(curve.length - 1)},${y(0)}" fill="${col}" fill-opacity="0.12"/>
-    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round"/>
-    <circle cx="${x(curve.length - 1)}" cy="${y(curve[curve.length - 1])}" r="3.5" fill="${col}"/>
-  </svg>`;
-}
-
-function statsRow(label, s, highlight) {
-  const pfCol = s.n === 0 ? 'text-slate-500' : s.pf >= 1.3 ? 'text-emerald-400' : s.pf >= 1 ? 'text-yellow-300' : 'text-rose-400';
-  return `<tr class="border-t border-slate-800 ${highlight ? 'bg-yellow-400/5' : ''}">
-    <td class="py-2.5 pr-2 text-sm font-semibold text-slate-200">${label}</td>
-    <td class="py-2.5 px-1 text-sm text-right text-slate-300">${s.n}</td>
-    <td class="py-2.5 px-1 text-sm text-right text-slate-300">${s.n ? s.winRate.toFixed(0) + '%' : '—'}</td>
-    <td class="py-2.5 px-1 text-sm text-right font-bold ${pfCol}">${s.n ? fmtPF(s.pf) : '—'}</td>
-    <td class="py-2.5 pl-1 text-sm text-right font-bold ${s.netR >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.n ? fmtR(s.netR) : '—'}</td>
-  </tr>`;
-}
-const statsHead = (first) => `<tr class="text-xs text-slate-500"><th class="text-left font-medium pb-1">${first}</th><th class="text-right font-medium pb-1">Trades</th><th class="text-right font-medium pb-1">Win</th><th class="text-right font-medium pb-1">PF</th><th class="text-right font-medium pb-1">Net</th></tr>`;
-
-function renderLabResults() {
-  const box = document.getElementById('labResults');
-  const R = state.lab.results;
-  if (!R) {
-    box.innerHTML = `<div class="text-center py-6">
-      <div class="text-3xl">📊</div>
-      <div class="text-base font-semibold text-white mt-2">No results yet</div>
-      <div class="text-sm text-slate-400 mt-1">Pick a market, a method and timeframes, then tap <b class="text-yellow-300">Run backtest</b>.</div>
+function renderPineOut() {
+  const box = document.getElementById('pineOut');
+  const G = state.lab.generated;
+  if (!G) {
+    box.innerHTML = `<div class="text-center py-5">
+      <div class="text-3xl">⚡</div>
+      <div class="text-base font-semibold text-white mt-2">Choose your settings, then tap Generate</div>
+      <div class="text-sm text-slate-400 mt-1">You get a TradingView script, a step-by-step guide and expert tips for the method.</div>
     </div>`;
     return;
   }
-  const s = R.stats, m = R.meta;
-  const strat = Aurum.STRATEGIES[m.strategyId];
-  const v = Aurum.backtest.verdict(s);
-  const vStyle = {
-    good: 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200',
-    ok: 'bg-yellow-500/10 border-yellow-500/40 text-yellow-100',
-    bad: 'bg-rose-500/10 border-rose-500/40 text-rose-200',
-    weak: 'bg-slate-800 border-slate-700 text-slate-200',
-    none: 'bg-slate-800 border-slate-700 text-slate-200',
-  }[v.level];
-  const vIcon = { good: '✅', ok: '⚖️', bad: '❌', weak: '⚠️', none: 'ℹ️' }[v.level];
-  const mk = Aurum.MARKETS[m.market];
-  const closed = R.trades.filter((t) => !t.open);
-  const openT = R.trades.find((t) => t.open);
-  const list = [...closed].reverse();
-  const shown = state.lab.showAllTrades ? list : list.slice(0, 12);
+  const S = G.snapshot;
+  const strat = Aurum.STRATEGIES[S.strategyId];
+  const mk = Aurum.MARKETS[S.market];
+  const tips = METHOD_TIPS[S.strategyId];
+  const start = G.at - PERIODS[S.period] * DAY_MS;
+  const events = Aurum.news.between(start, G.at + 14 * DAY_MS);
+  const past = events.filter((e) => e.t <= G.at);
+  const next = events.filter((e) => e.t > G.at);
+  const short = (t) => (t.startsWith('FOMC') ? 'FOMC' : t.includes('CPI') ? 'CPI' : 'NFP');
+  const tvUrl = `https://www.tradingview.com/chart/?symbol=OANDA%3A${mk.ticker}&interval=${Aurum.TIMEFRAMES[S.setupTF].tv}`;
+  const rulesOn = strat.confluences.filter((c) => S.cfg[c.key]).map((c) => c.label);
 
   box.innerHTML = `
     <div>
-      <div class="text-sm text-slate-400">${mk.name} · ${tfLabel(m.setupTF)} setup → ${tfLabel(m.entryTF)} entry · ${m.rr === 'struct' ? 'Structure target' : '1:' + m.rr}${m.partialBE ? ' · 50% at 1R' : ''}</div>
-      <div class="text-lg font-bold text-white mt-0.5">${strat.name}</div>
-      <div class="text-sm text-slate-400">Last ${m.period} · ${fmtDate(m.from)} → ${fmtDate(m.to)}</div>
+      <div class="text-sm text-slate-400">Ready for TradingView</div>
+      <div class="text-lg font-bold text-white">${strat.name}</div>
+      <div class="text-sm text-slate-300">OANDA:${mk.ticker} · ${tfLabel(S.setupTF)} chart · last ${S.period} · ${S.rr === 'struct' ? 'structure target' : '1:' + S.rr}${S.partialBE ? ' · 50% at 1R' : ''}${S.newsFilter ? ' · news filter ON' : ''}</div>
+      <div class="text-xs text-slate-500 mt-1">Rules on: ${rulesOn.join(' · ') || 'pattern only'}</div>
     </div>
 
-    <div class="rounded-2xl border p-3 text-sm leading-snug ${vStyle}">${vIcon} ${v.text}</div>
+    <button id="copyPineBtn" onclick="copyPineScript()" class="w-full h-14 rounded-2xl bg-gradient-to-r from-yellow-400 to-amber-500 text-slate-950 font-extrabold text-base active:scale-[0.99] transition">📋 Copy Pine Script</button>
+    <a href="${tvUrl}" target="_blank" rel="noopener" class="flex items-center justify-center w-full h-12 rounded-2xl bg-slate-900 border border-slate-700 text-slate-100 font-bold text-sm">📈 Open OANDA:${mk.ticker} ${tfLabel(S.setupTF)} in TradingView</a>
 
-    <div class="grid grid-cols-2 gap-2">
-      ${statTile('Win rate', s.n ? s.winRate.toFixed(0) + '%' : '—', `${s.wins} won · ${s.losses} lost · ${s.be} BE`, 'text-white')}
-      ${statTile('Profit factor', s.n ? fmtPF(s.pf) : '—', 'Gains ÷ losses', s.pf >= 1.3 ? 'text-emerald-400' : s.pf >= 1 ? 'text-yellow-300' : 'text-rose-400')}
-      ${statTile('Net result', s.n ? fmtR(s.netR) : '—', `${s.returnPct >= 0 ? '+' : ''}${s.returnPct.toFixed(1)}% at 1% risk`, s.netR >= 0 ? 'text-emerald-400' : 'text-rose-400')}
-      ${statTile('Max drawdown', s.n ? '-' + s.maxDDR.toFixed(1) + 'R' : '—', `-${s.maxDDPct.toFixed(1)}% at 1% risk`, s.maxDDPct <= 5 ? 'text-sky-300' : 'text-amber-300')}
-    </div>
-    <div class="grid grid-cols-3 gap-2 text-center">
-      <div class="bg-slate-900 rounded-xl p-2 border border-slate-800"><div class="text-xs text-slate-400">Trades</div><div class="text-base font-bold text-white">${s.n}</div><div class="text-xs text-slate-500">${s.longs}L / ${s.shorts}S</div></div>
-      <div class="bg-slate-900 rounded-xl p-2 border border-slate-800"><div class="text-xs text-slate-400">Avg / trade</div><div class="text-base font-bold ${s.avgR >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.n ? fmtR(s.avgR).replace('.0R', 'R') : '—'}</div><div class="text-xs text-slate-500">${s.avgR.toFixed(2)}R</div></div>
-      <div class="bg-slate-900 rounded-xl p-2 border border-slate-800"><div class="text-xs text-slate-400">Loss streak</div><div class="text-base font-bold text-white">${s.maxLossStreak}</div><div class="text-xs text-slate-500">~${s.avgHoldH.toFixed(0)}h hold</div></div>
-    </div>
+    ${guideCard('1 · How to test it in TradingView', `<ol class="space-y-1.5 list-decimal pl-5">
+      <li>Tap <b>Copy Pine Script</b> above.</li>
+      <li>Open TradingView (a free account is enough) on <b>OANDA:${mk.ticker}</b>, timeframe <b>${tfLabel(S.setupTF)}</b>.</li>
+      <li>Open <b>Pine Editor</b> (bottom of the screen on desktop), delete everything, paste.</li>
+      <li>Tap <b>Add to chart</b>. Green ▲ / red ▼ labels show the entries, with the red stop line and green target line.</li>
+      <li>Open the <b>Strategy Tester</b> tab: Overview, then List of trades.</li>
+      <li>To change the method, rules, target or dates without coming back here, click the ⚙ settings of the strategy on the chart.</li>
+    </ol>
+    <p class="text-xs text-slate-500 mt-2">Easiest on a computer. The TradingView phone app can run scripts, but editing is harder.</p>`)}
 
-    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
-      <div class="text-sm font-semibold text-slate-200 mb-1">Equity curve (cumulative R)</div>
-      ${equitySvg(s.curve)}
-    </div>
+    ${guideCard('2 · How to read the results', `<ul class="space-y-1.5">
+      <li>📊 <b>Total closed trades:</b> under 30 trades, the result is luck, not proof. Test a longer period or a lower timeframe.</li>
+      <li>🎯 <b>Percent profitable:</b> with a 1:2 target, about 40% winners is already break-even.</li>
+      <li>💰 <b>Profit factor:</b> gains ÷ losses. Under 1 loses money, 1.3+ is good, 1.5+ is strong.</li>
+      <li>📉 <b>Max drawdown:</b> the worst dip. For a prop firm, keep it under 5–10%.</li>
+      <li>🔍 In <b>List of trades</b>, click each loser to see it on the chart. Was it near a 📰 news label? Against the trend? At a weak level?</li>
+      <li>🧾 With "50% at 1R", one trade shows as 2 lines in the list (the half closed at 1R, then the rest).</li>
+      <li>📅 To compare 1M / 3M / 6M: change <b>Début du test</b> in the settings. TradingView only tests the candles it loaded; if a long period gives few trades, switch to 4H.</li>
+    </ul>`)}
 
-    ${expertBlock(R)}
+    ${guideCard(`3 · Expert tips — ${strat.short}`, `<p class="text-yellow-200 mb-2">⭐ ${tips.best}</p>
+      <ul class="space-y-1.5">${tips.tips.map((t) => `<li>• ${t}</li>`).join('')}</ul>
+      <div class="mt-3 pt-3 border-t border-slate-800">
+        <div class="font-semibold text-slate-200 mb-1">General rules from experience</div>
+        <ul class="space-y-1.5">
+          <li>• The best gold moves come at the London open (08:00–11:00 Paris) and the New York open (14:30–17:00 Paris). The Asian session is often a range: be careful there.</li>
+          <li>• Trade in the direction of the higher-timeframe trend first. Counter-trend setups need every confluence.</li>
+          <li>• Silver moves about 1.5–2× more than gold in %. Expect wider stops and more fake breaks.</li>
+          <li>• Risk 0.5–1% per trade. After 3 losses in a row, stop for the day.</li>
+          <li>• The script is mechanical. Your eye adds the context (clean structure, liquidity, news): use the script to find setups, and your judgment to filter them.</li>
+        </ul>
+      </div>`)}
 
-    ${R.compare ? `
-    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
-      <div class="text-sm font-semibold text-slate-200">Same rules across periods</div>
-      <div class="text-xs text-slate-500 mb-2">A real edge stays positive in every window.</div>
-      <table class="w-full">${statsHead('Period')}${R.compare.map((c) => statsRow('Last ' + c.period, c.stats, c.period === m.period)).join('')}</table>
-    </div>` : ''}
-
-    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
-      <div class="text-sm font-semibold text-slate-200">Which rule adds edge?</div>
-      <div class="text-xs text-slate-500 mb-2">Same test, removing one confluence at a time. If PF drops without a rule, that rule matters.</div>
-      <table class="w-full">${statsHead('Test')}${statsRow('All your rules', s, true)}${R.ablation.map((a) => statsRow(a.label.startsWith('Pattern') || a.label.includes('news filter') ? a.label : 'Without: ' + a.label, a.stats)).join('')}</table>
-    </div>
-
-    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
-      <div class="flex items-center justify-between mb-2">
-        <div class="text-sm font-semibold text-slate-200">Trades (${closed.length})</div>
-        <div class="text-xs text-slate-500">newest first</div>
-      </div>
-      ${openT ? `<div class="mb-2 p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sm text-sky-200">🔵 Open now: ${openT.side} @ ${openT.entry.toFixed(mk.decimals)} · SL ${openT.stop.toFixed(mk.decimals)} · TP ${openT.target.toFixed(mk.decimals)}</div>` : ''}
-      <div class="space-y-1.5">
-        ${shown.length ? shown.map((t) => `
-          <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex items-center gap-2">
-                <span class="px-2 py-0.5 rounded-md text-xs font-bold ${t.dir === 1 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${t.side}</span>
-                <span class="text-sm text-slate-300">${fmtDateTime(t.entryTime)}</span>
-              </div>
-              <span class="text-base font-bold ${t.r > 0.05 ? 'text-emerald-400' : t.r < -0.05 ? 'text-rose-400' : 'text-slate-300'}">${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R</span>
-            </div>
-            <div class="text-xs text-slate-400 mt-1">${t.entry.toFixed(mk.decimals)} → ${t.exitPrice.toFixed(mk.decimals)} · ${t.outcome === 'TP' ? 'Target hit' : t.outcome === 'BE' ? 'Partial + breakeven' : 'Stopped'} · ${t.trigger}</div>
-            <div class="text-xs text-slate-500">${t.reasons.join(' · ')}</div>
-            <div class="flex flex-wrap gap-1 mt-1.5">${Aurum.analysis.tradeChips(t).map((c) => `<span class="px-1.5 py-0.5 rounded-md text-[11px] font-medium ${CHIP[c.tone]}">${c.text}</span>`).join('')}</div>
-          </div>`).join('') : '<div class="text-sm text-slate-500 py-2">No closed trades in this period.</div>'}
-      </div>
-      ${list.length > 12 ? `<button onclick="state.lab.showAllTrades=!state.lab.showAllTrades;renderLabResults()" class="w-full mt-2 h-10 rounded-xl bg-slate-800 text-sm font-semibold text-slate-200">${state.lab.showAllTrades ? 'Show fewer' : `Show all ${list.length} trades`}</button>` : ''}
-    </div>
-
-    <button onclick="sendLabSetupToTradePad()" class="w-full h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-bold text-sm active:scale-[0.99] transition">
-      Use this method's checklist in Trade Pad →
-    </button>
-  `;
-}
-
-const CHIP = {
-  good: 'bg-emerald-500/15 text-emerald-300',
-  bad: 'bg-rose-500/15 text-rose-300',
-  warn: 'bg-amber-500/15 text-amber-200',
-  info: 'bg-slate-800 text-slate-300',
-};
-const TONE = {
-  good: { box: 'border-emerald-500/30 bg-emerald-500/5', icon: '✅' },
-  bad: { box: 'border-rose-500/30 bg-rose-500/5', icon: '❌' },
-  warn: { box: 'border-amber-500/30 bg-amber-500/5', icon: '⚠️' },
-  info: { box: 'border-slate-700 bg-slate-900', icon: '💡' },
-};
-
-function expertBlock(R) {
-  const a = R.analysis;
-  if (!a) return '';
-  const ev = a.eventsInWindow;
-  const bd = Object.entries(a.breakdowns).filter(([, rows]) => rows.length > 1);
-  return `
-    <div class="bg-slate-950 rounded-2xl p-3 border border-yellow-500/30 space-y-2">
-      <div>
-        <div class="text-base font-bold text-yellow-300">🧠 Expert analysis</div>
-        <div class="text-xs text-slate-500">Why it worked or failed: news, sessions, trend, volatility.</div>
-      </div>
-      ${a.insights.map((i) => `
-        <div class="rounded-xl border p-3 ${TONE[i.tone].box}">
-          <div class="text-sm font-bold text-white">${TONE[i.tone].icon} ${i.title}</div>
-          <div class="text-sm text-slate-300 mt-1 leading-snug">${i.text}</div>
-        </div>`).join('')}
-      ${bd.map(([title, rows]) => `
-        <div class="pt-1">
-          <table class="w-full">${statsHead(title)}${rows.map((x) => statsRow(x.label, x.stats)).join('')}</table>
-        </div>`).join('')}
-      <details class="pt-1">
-        <summary class="text-sm font-semibold text-slate-300 cursor-pointer">Red-folder USD news in this window (${ev.length})</summary>
-        <div class="mt-2 space-y-1">
-          ${ev.map((e) => `<div class="flex justify-between text-xs text-slate-400"><span>${e.title}${e.approx ? ' <span class="text-slate-600">(≈ date)</span>' : ''}</span><span>${fmtDateTime(e.t)}</span></div>`).join('') || '<div class="text-xs text-slate-500">None</div>'}
-        </div>
-        <div class="text-xs text-slate-600 mt-2">Built-in schedule: FOMC, CPI, NFP. Dates marked ≈ are estimated.</div>
+    ${guideCard('4 · Red-folder USD news', `<p class="mb-2">These are the releases that move gold the most. In the script they show as 📰 orange candles${S.newsFilter ? ', and no entry is taken from 2h before to 1h after them' : '. Turn on "Skip red-folder news" to block entries around them'}.</p>
+      <ul class="space-y-1.5 mb-3">${Object.entries(NEWS_EXPLAIN).map(([k, v]) => `<li><b class="text-amber-300">${k}:</b> ${v}</li>`).join('')}</ul>
+      ${next.length ? `<div class="font-semibold text-slate-200">Coming up</div>
+      <div class="space-y-1 mb-3">${next.map((e) => `<div class="flex justify-between gap-2 text-xs"><span class="text-amber-300 font-bold">${short(e.title)}${e.approx ? ' ≈' : ''}</span><span class="text-slate-300">${fmtDateTime(e.t)}</span></div>`).join('')}</div>` : ''}
+      <details>
+        <summary class="font-semibold text-slate-200 cursor-pointer">In your test window (${past.length})</summary>
+        <div class="space-y-1 mt-2">${past.map((e) => `<div class="flex justify-between gap-2 text-xs"><span class="text-amber-300 font-bold">${short(e.title)}${e.approx ? ' ≈' : ''}</span><span class="text-slate-400">${fmtDateTime(e.t)}</span></div>`).join('') || '<div class="text-xs text-slate-500">None</div>'}</div>
       </details>
-    </div>`;
+      <p class="text-xs text-slate-500 mt-2">Built-in schedule: FOMC dates are official. CPI / NFP dates marked ≈ are estimates; check ForexFactory for the exact day.</p>`)}
+
+    <details class="rounded-2xl bg-slate-900 border border-slate-800 p-3">
+      <summary class="text-base font-bold text-white cursor-pointer">Show the code</summary>
+      <pre class="mt-2 max-h-80 overflow-auto bg-slate-950 rounded-lg p-2 text-[11px] leading-snug text-emerald-300 font-mono whitespace-pre select-text">${G.code.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre>
+    </details>
+  `;
 }
 
 function sendLabSetupToTradePad() {
@@ -814,7 +673,10 @@ function setRiskPct(pct) {
 // Target R used by the pad ('Structure' falls back to 2R for sizing).
 function padRR() { return state.lab.rr === 'struct' ? 2 : state.lab.rr; }
 function padMarket() { return Aurum.MARKETS[state.lab.market]; }
-function padPrice() { return state.prices[state.lab.market]; }
+function padPrice() {
+  const v = parseFloat(document.getElementById('padEntryPrice').value);
+  return v > 0 ? v : null;
+}
 
 function recalcOrderPad() {
   const mk = padMarket();
@@ -844,7 +706,7 @@ function recalcOrderPad() {
   const px = padPrice();
   const tp2Cash = Math.round(riskCash * (state.lab.partialBE ? (0.5 + 0.5 * rr) : rr));
   document.getElementById('outTP1').textContent = `+$${Math.round(riskCash * 0.5).toLocaleString()} (1R)`;
-  document.getElementById('outTP1Price').textContent = px ? `@ ${(px + slDollars).toFixed(mk.decimals)}` : 'long, from live price';
+  document.getElementById('outTP1Price').textContent = px ? `@ ${(px + slDollars).toFixed(mk.decimals)} (long)` : 'enter a price above';
   document.getElementById('outTP2').textContent = `+$${tp2Cash.toLocaleString()} (${rr}R)`;
   document.getElementById('outTP2Price').textContent = px ? `@ ${(px + slDollars * rr).toFixed(mk.decimals)}` : '';
   document.getElementById('outTP2Label').textContent = `FINAL TP (${rr}R)`;
@@ -853,7 +715,7 @@ function recalcOrderPad() {
 function copyMT5Ticket() {
   const mk = padMarket();
   const px = padPrice();
-  if (!px) { showToast('Live price unavailable — add your API key in Backtest'); return; }
+  if (!px) { showToast('Type your entry price first'); return; }
   const lots = document.getElementById('outLotSize').textContent;
   const slDollars = parseFloat(document.getElementById('slDistSlider').value);
   const rr = padRR();
@@ -933,7 +795,7 @@ function cycleTradeOutcome(idx) {
 }
 
 // ============================================================================
-// LIVE PRICES (Twelve Data) + HEADER
+// HEADER (TradingView chart follows the selected market)
 // ============================================================================
 function updateHeaderMarket() {
   const mk = padMarket();
@@ -945,36 +807,12 @@ function updateHeaderMarket() {
   }
 }
 
-function renderPrices() {
-  for (const id of ['XAU', 'XAG']) {
-    const el = document.getElementById(`price${id}`);
-    const px = state.prices[id];
-    if (el) el.textContent = px ? px.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: Aurum.MARKETS[id].decimals }) : '—';
-  }
-}
-
-async function refreshLivePrices() {
-  if (!Aurum.data.getApiKey() || document.hidden) return;
-  try {
-    const [xau, xag] = await Promise.all([Aurum.data.getPrice('XAU'), Aurum.data.getPrice('XAG')]);
-    if (xau) state.prices.XAU = xau;
-    if (xag) state.prices.XAG = xag;
-    renderPrices();
-    recalcOrderPad();
-  } catch (e) { /* offline or rate-limited: keep last prices */ }
-}
-setInterval(refreshLivePrices, 5 * 60 * 1000);
-
 // Initialize App on Load
 window.addEventListener('DOMContentLoaded', () => {
   loadLabPrefs();
-  state.lab.running = false;
-  state.lab.status = '';
   renderSetupLab();
   renderMacroRadar();
   renderTradePad();
   renderJournal();
   updateHeaderMarket();
-  renderPrices();
-  refreshLivePrices();
 });

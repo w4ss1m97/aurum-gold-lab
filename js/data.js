@@ -5,19 +5,10 @@
 (function (g) {
   const A = (g.Aurum = g.Aurum || {});
 
-  const MARKETS = {
-    XAU: { id: 'XAU', apiSymbol: 'XAU/USD', name: 'Gold', ticker: 'XAUUSD', contractOz: 100, spread: 0.30, decimals: 2, pair: 'XAG' },
-    XAG: { id: 'XAG', apiSymbol: 'XAG/USD', name: 'Silver', ticker: 'XAGUSD', contractOz: 5000, spread: 0.03, decimals: 3, pair: 'XAU' },
-  };
-
-  const MIN = 60 * 1000, HOUR = 60 * MIN, DAY = 24 * HOUR;
-  const TIMEFRAMES = {
-    M5:  { id: 'M5',  api: '5min',  ms: 5 * MIN,  label: '5m' },
-    M15: { id: 'M15', api: '15min', ms: 15 * MIN, label: '15m' },
-    H1:  { id: 'H1',  api: '1h',    ms: HOUR,     label: '1H' },
-    H4:  { id: 'H4',  api: '4h',    ms: 4 * HOUR, label: '4H' },
-    D1:  { id: 'D1',  api: '1day',  ms: DAY,      label: 'Daily' },
-  };
+  // Markets and timeframes live in js/markets.js (load it first).
+  const MARKETS = A.MARKETS;
+  const TIMEFRAMES = A.TIMEFRAMES;
+  const MIN = 60 * 1000;
 
   const PAGE = 5000;
   const KEY_STORAGE = 'aurum.twelvedata.key';
@@ -161,7 +152,5 @@
     });
   }
 
-  A.MARKETS = MARKETS;
-  A.TIMEFRAMES = TIMEFRAMES;
   A.data = { getApiKey, setApiKey, getBars, getPrice, clearCache };
 })(typeof window !== 'undefined' ? window : globalThis);
