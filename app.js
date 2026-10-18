@@ -417,6 +417,7 @@ function renderPineOut() {
       <div class="text-xs text-slate-500 mt-1">Rules on: ${rulesOn.join(' · ') || 'pattern only'}</div>
     </div>
 
+    ${S.setupTF === 'D1' ? `<div class="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">⚠️ Daily candles give very few setups (often 0–2 a year with all rules on). If TradingView says "Trades are required", set <b>Début du test</b> 3–5 years back, or use 4H.</div>` : ''}
     <button id="copyPineBtn" onclick="copyPineScript()" class="w-full h-14 rounded-2xl bg-gradient-to-r from-yellow-400 to-amber-500 text-slate-950 font-extrabold text-base active:scale-[0.99] transition">📋 Copy Pine Script</button>
     <a href="${tvUrl}" target="_blank" rel="noopener" class="flex items-center justify-center w-full h-12 rounded-2xl bg-slate-900 border border-slate-700 text-slate-100 font-bold text-sm">📈 Open OANDA:${mk.ticker} ${tfLabel(S.setupTF)} in TradingView</a>
 
