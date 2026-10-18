@@ -517,7 +517,7 @@ showLv = strategy.position_size != 0 or goDir != 0
 plot(showLv ? tStop : na, "Stop", color=color.red, style=plot.style_linebr, linewidth=2)
 plot(showLv ? tTgt : na, "Objectif", color=color.lime, style=plot.style_linebr, linewidth=2)
 
-var table hud = table.new(position.top_right, 2, 7, bgcolor=color.new(#0f172a, 10), border_color=color.new(#facc15, 60), border_width=1)
+var table hud = table.new(position.bottom_right, 2, 7, bgcolor=color.new(#0f172a, 10), border_color=color.new(#facc15, 60), border_width=1)
 if barstate.islast
     ct = strategy.closedtrades
     winR = ct > 0 ? 100.0 * strategy.wintrades / ct : 0.0
