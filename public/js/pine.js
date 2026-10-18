@@ -9,7 +9,7 @@
 // Differences vs the in-app engine (also written in the script header):
 //  - Entry is always the next candle open on the chart timeframe.
 //  - Red-folder USD news (FOMC, CPI, NFP) is injected from js/news.js as a
-//    timestamp list: highlighted on the chart and usable as an entry filter.
+//    timestamp list: shown as small hints only, never used to take or skip a trade.
 //  - Target / partial levels use the signal close as the fill estimate until
 //    the first bar in the trade closes, then the real fill (+ spread).
 //  - If a candle touches stop and target, TradingView's intrabar model decides.
@@ -72,7 +72,7 @@ M_SMT = "${METHOD_LABEL.oteSmt}"
 grpM = "Méthode"
 grpC = "Confluences"
 grpX = "Sortie & risque"
-grpN = "News rouges USD"
+grpN = "News rouges USD (indice seulement)"
 methodSel = input.string("${METHOD_LABEL[opts.strategyId]}", "Méthode", options=[M_CRT, M_HD, M_DT, M_SMT], group=grpM)
 useOte = input.bool(${b(on('ote'))}, "Zone OTE 62–79%", group=grpC, tooltip="Toutes les méthodes. Off = retracement ≥ 38.2% suffit.")
 useDiv = input.bool(${b(on('hiddenDiv'))}, "Divergence cachée (RSI 14)", group=grpC, tooltip="Div. cachée + OTE, CRT, OTE + SMT")
@@ -88,8 +88,7 @@ autoSpread = input.bool(true, "Spread auto (Or 0.30 / Argent 0.03)", group=grpX)
 spreadIn = input.float(${num(mk.spread, dec)}, "Spread manuel (en prix)", step=0.01, group=grpX)
 riskPct = input.float(1.0, "Risque par trade (%)", step=0.25, group=grpX)
 startTime = input.time(timestamp("${pineDate(startMs)}"), "Début du test", group=grpX, tooltip="Change cette date pour tester 1 mois, 3 mois, 6 mois…")
-useNews = input.bool(${b(opts.newsFilter)}, "Bloquer les entrées près des news", group=grpN, tooltip="Pas d'entrée 2h avant / 1h après FOMC, CPI, NFP")
-showNews = input.bool(true, "Afficher les news sur le graphique", group=grpN)
+showNews = input.bool(true, "Afficher les news (petits ◆ en bas du graphique)", group=grpN, tooltip="Les news ne déclenchent ni ne bloquent aucun trade: seule la méthode décide. C'est un indice pour ta propre lecture.")
 
 // === 2. CONSTANTES (identiques à js/strategies.js) ===
 OTE_LO = 0.62
@@ -101,23 +100,23 @@ WARMUP = 60
 
 // === NEWS ROUGES USD (calendrier intégré AurumOS; ≈ = date estimée) ===
 ${newsDecl}
-newsNear(int t0) =>
-    bool hit = false
+// Noms des news dans la fenêtre [-1h, +2h] autour de t0 (texte d'indice uniquement)
+newsNearNames(int t0) =>
+    string names = ""
     n = array.size(newsT)
     if n > 0
         for i = 0 to n - 1
             nt = array.get(newsT, i)
             if nt >= t0 - 3600000 and nt <= t0 + 7200000
-                hit := true
-                break
-    hit
+                names := names + (names == "" ? "" : " + ") + array.get(newsN, i)
+    names
 string newsHere = ""
 if array.size(newsT) > 0
     for i = 0 to array.size(newsT) - 1
         nt = array.get(newsT, i)
         if nt >= time and nt < time_close
             newsHere := newsHere + (newsHere == "" ? "" : " + ") + array.get(newsN, i)
-newsNow = newsNear(time_close)
+newsSoon = newsNearNames(time_close)
 
 atrV = ta.atr(14)
 rsiV = ta.rsi(close, 14)
@@ -445,7 +444,8 @@ detect(array<int> hiI, array<float> hiP, array<int> loI, array<float> loP, float
 
 rrFixed = rrMode == "1:1.5" ? 1.5 : rrMode == "1:3" ? 3.0 : 2.0
 isStruct = rrMode == "Structure"
-inWindow = bar_index >= WARMUP and time_close >= startTime and not (useNews and newsNow)
+// Les entrées dépendent UNIQUEMENT de la méthode (aucun filtre news)
+inWindow = bar_index >= WARMUP and time_close >= startTime
 
 var int lastKeyL = na
 var int lastKeyS = na
@@ -523,19 +523,22 @@ if goDir != 0
 
 // === 7. VISUEL ===
 tag = methodSel == M_CRT ? "CRT" : methodSel == M_DT ? "Double" : methodSel == M_SMT ? "OTE+SMT" : "Div+OTE"
-warn = newsNow ? "\\n⚠ news proche" : ""
+// Trades: étiquettes ACHAT / VENTE (seule la méthode décide)
+hint = newsSoon != "" ? "\\n📰 " + newsSoon + " proche — prudence (indice)" : ""
+lvl = goDir != 0 ? "\\nEntrée ~" + str.tostring(close, format.mintick) + "  SL " + str.tostring(tStop, format.mintick) + "  TP " + str.tostring(tTgt, format.mintick) : ""
 if goDir == 1
-    label.new(bar_index, low, "▲ " + tag + warn, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    label.new(bar_index, low, "ACHAT · " + tag + lvl + hint, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
 if goDir == -1
-    label.new(bar_index, high, "▼ " + tag + warn, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
-bgcolor(showNews and newsHere != "" ? color.new(color.orange, 80) : na, title="News rouges")
-if showNews and newsHere != ""
-    label.new(bar_index, high, "📰 " + newsHere, yloc=yloc.abovebar, style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.black, size=size.tiny)
+    label.new(bar_index, high, "VENTE · " + tag + lvl + hint, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+// News: petits repères gris en bas du graphique, jamais un signal
+plotshape(showNews and str.contains(newsHere, "FOMC"), "News FOMC", shape.diamond, location.bottom, color.new(color.gray, 20), text="FOMC", textcolor=color.gray, size=size.tiny)
+plotshape(showNews and str.contains(newsHere, "CPI"), "News CPI", shape.diamond, location.bottom, color.new(color.gray, 20), text="CPI", textcolor=color.gray, size=size.tiny)
+plotshape(showNews and str.contains(newsHere, "NFP"), "News NFP", shape.diamond, location.bottom, color.new(color.gray, 20), text="NFP", textcolor=color.gray, size=size.tiny)
 showLv = strategy.position_size != 0 or goDir != 0
 plot(showLv ? tStop : na, "Stop", color=color.red, style=plot.style_linebr, linewidth=2)
 plot(showLv ? tTgt : na, "Objectif", color=color.lime, style=plot.style_linebr, linewidth=2)
 
-var table hud = table.new(position.bottom_right, 2, 8, bgcolor=color.new(#0f172a, 10), border_color=color.new(#facc15, 60), border_width=1)
+var table hud = table.new(position.bottom_right, 2, 9, bgcolor=color.new(#0f172a, 10), border_color=color.new(#facc15, 60), border_width=1)
 if barstate.islast
     ct = strategy.closedtrades
     winR = ct > 0 ? 100.0 * strategy.wintrades / ct : 0.0
@@ -555,9 +558,11 @@ if barstate.islast
     table.cell(hud, 1, 5, "-" + str.tostring(ddPct, "#.0") + "%", text_color=ddPct <= 5 ? color.aqua : color.orange, text_size=size.small)
     verdict = ct < 15 ? "Trop peu de trades" : pf >= 1.5 ? "Edge positif ✓" : pf >= 1.1 ? "Edge faible" : "Pas d'edge ✗"
     table.cell(hud, 0, 6, "Verdict", text_color=color.silver, text_size=size.small)
+    table.cell(hud, 0, 7, "News", text_color=color.silver, text_size=size.small)
+    table.cell(hud, 1, 7, "indice seulement (◆ en bas)", text_color=color.gray, text_size=size.small)
     if wrongMetal
-        table.cell(hud, 0, 7, "⚠ Attention", text_color=color.orange, text_size=size.small)
-        table.cell(hud, 1, 7, "Script généré pour " + genFor + " — régénère-le pour ce métal", text_color=color.orange, text_size=size.small)
+        table.cell(hud, 0, 8, "⚠ Attention", text_color=color.orange, text_size=size.small)
+        table.cell(hud, 1, 8, "Script généré pour " + genFor + " — régénère-le pour ce métal", text_color=color.orange, text_size=size.small)
     table.cell(hud, 1, 6, verdict, text_color=pf >= 1.5 and ct >= 15 ? color.lime : pf >= 1.1 ? color.yellow : color.red, text_size=size.small)
 `;
   }

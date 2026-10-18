@@ -14,7 +14,6 @@ const state = {
     period: '6M',
     rr: 2,
     partialBE: true,
-    newsFilter: false,
     cfgByStrategy: {},
     generated: null,
   },
@@ -193,15 +192,15 @@ const SETUP_TFS = ['H1', 'H4', 'D1'];
 
 const LAB_PREFS_KEY = 'aurum.lab.prefs';
 function saveLabPrefs() {
-  const { market, strategyId, setupTF, period, rr, partialBE, newsFilter, cfgByStrategy } = state.lab;
-  try { localStorage.setItem(LAB_PREFS_KEY, JSON.stringify({ market, strategyId, setupTF, period, rr, partialBE, newsFilter, cfgByStrategy })); } catch (e) { /* ignore */ }
+  const { market, strategyId, setupTF, period, rr, partialBE, cfgByStrategy } = state.lab;
+  try { localStorage.setItem(LAB_PREFS_KEY, JSON.stringify({ market, strategyId, setupTF, period, rr, partialBE, cfgByStrategy })); } catch (e) { /* ignore */ }
 }
 function loadLabPrefs() {
   try {
     const p = JSON.parse(localStorage.getItem(LAB_PREFS_KEY) || 'null');
     if (!p || !Aurum.STRATEGIES[p.strategyId]) return;
-    const { market, strategyId, setupTF, period, rr, partialBE, newsFilter, cfgByStrategy } = p;
-    Object.assign(state.lab, { market, strategyId, partialBE: !!partialBE, newsFilter: !!newsFilter, cfgByStrategy: cfgByStrategy || {} });
+    const { market, strategyId, setupTF, period, rr, partialBE, cfgByStrategy } = p;
+    Object.assign(state.lab, { market, strategyId, partialBE: !!partialBE, cfgByStrategy: cfgByStrategy || {} });
     if (SETUP_TFS.includes(setupTF)) state.lab.setupTF = setupTF;
     if (PERIODS[period]) state.lab.period = period;
     if (rr === 'struct' || [1.5, 2, 3].includes(rr)) state.lab.rr = rr;
@@ -299,7 +298,6 @@ function renderSetupLab() {
   document.getElementById('labPeriod').innerHTML = seg(Object.keys(PERIODS), L.period, 'labSetPeriod');
   document.getElementById('labRR').innerHTML = seg(['1.5', '2', '3', 'struct'], L.rr, 'labSetRR', (v) => (v === 'struct' ? 'Structure' : `1:${v}`));
   document.getElementById('labPartial').checked = L.partialBE;
-  document.getElementById('labNews').checked = L.newsFilter;
 
   document.getElementById('labConfluences').innerHTML = strat.confluences.map((c) => {
     const on = cfg[c.key];
@@ -329,7 +327,6 @@ function labSet(field, val) {
 function labSetTF(tf) { labSet('setupTF', tf); }
 function labSetPeriod(p) { labSet('period', p); }
 function labSetRR(v) { labSet('rr', v === 'struct' ? 'struct' : parseFloat(v)); recalcOrderPad(); }
-function labToggleNews() { labSet('newsFilter', document.getElementById('labNews').checked); }
 function labTogglePartial() { labSet('partialBE', document.getElementById('labPartial').checked); recalcOrderPad(); }
 function labToggleConf(key) {
   const cfg = currentCfg();
@@ -341,7 +338,7 @@ function generatePine() {
   const L = state.lab;
   const code = Aurum.pine.generate({
     strategyId: L.strategyId, cfg: currentCfg(), market: L.market, rr: L.rr, partialBE: L.partialBE,
-    period: L.period, setupTFLabel: tfLabel(L.setupTF), newsFilter: L.newsFilter,
+    period: L.period, setupTFLabel: tfLabel(L.setupTF),
   });
   L.generated = { code, at: Date.now(), snapshot: { ...L, cfg: { ...currentCfg() } } };
   renderPineOut();
@@ -413,7 +410,7 @@ function renderPineOut() {
     <div>
       <div class="text-sm text-slate-400">Ready for TradingView</div>
       <div class="text-lg font-bold text-white">${strat.name}</div>
-      <div class="text-sm text-slate-300">OANDA:${mk.ticker} · ${tfLabel(S.setupTF)} chart · last ${S.period} · ${S.rr === 'struct' ? 'structure target' : '1:' + S.rr}${S.partialBE ? ' · 50% at 1R' : ''}${S.newsFilter ? ' · news filter ON' : ''}</div>
+      <div class="text-sm text-slate-300">OANDA:${mk.ticker} · ${tfLabel(S.setupTF)} chart · last ${S.period} · ${S.rr === 'struct' ? 'structure target' : '1:' + S.rr}${S.partialBE ? ' · 50% at 1R' : ''}</div>
       <div class="text-xs text-slate-500 mt-1">Rules on: ${rulesOn.join(' · ') || 'pattern only'}</div>
     </div>
 
@@ -454,7 +451,7 @@ function renderPineOut() {
         </ul>
       </div>`)}
 
-    ${guideCard('4 · Red-folder USD news', `<p class="mb-2">These are the releases that move gold the most. In the script they show as 📰 orange candles${S.newsFilter ? ', and no entry is taken from 2h before to 1h after them' : '. Turn on "Skip red-folder news" to block entries around them'}.</p>
+    ${guideCard('4 · Red-folder USD news', `<p class="mb-2">These are the releases that move gold the most. In the script they are <b>hints only</b>: a small grey ◆ FOMC / CPI / NFP at the bottom of the chart. They never open, close or block a trade. Only the method decides. When a release is close to an entry, the ACHAT / VENTE label adds "📰 … proche — prudence" so you can judge it yourself.</p>
       <ul class="space-y-1.5 mb-3">${Object.entries(NEWS_EXPLAIN).map(([k, v]) => `<li><b class="text-amber-300">${k}:</b> ${v}</li>`).join('')}</ul>
       ${next.length ? `<div class="font-semibold text-slate-200">Coming up</div>
       <div class="space-y-1 mb-3">${next.map((e) => `<div class="flex justify-between gap-2 text-xs"><span class="text-amber-300 font-bold">${short(e.title)}${e.approx ? ' ≈' : ''}</span><span class="text-slate-300">${fmtDateTime(e.t)}</span></div>`).join('')}</div>` : ''}
