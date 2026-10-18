@@ -62,7 +62,7 @@
 // stop et objectif, c'est le modèle intrabar de TradingView qui tranche; le 50%
 // à 1R apparaît comme un trade séparé dans la liste des trades.
 ${notes.join('\n')}${notes.length ? '\n' : ''}// ============================================================================
-strategy("AurumOS · ${METHOD_LABEL[opts.strategyId]}", shorttitle="AurumOS", overlay=true, initial_capital=100000, default_qty_type=strategy.fixed, pyramiding=0, commission_type=strategy.commission.cash_per_contract, commission_value=${num(mk.spread / 2, dec + 1)}, max_bars_back=1000, max_labels_count=500)
+strategy("AurumOS · ${METHOD_LABEL[opts.strategyId]}", shorttitle="AurumOS", overlay=true, initial_capital=100000, default_qty_type=strategy.fixed, pyramiding=0, commission_type=strategy.commission.percent, commission_value=${num(mk.spread / 2 / mk.refPrice * 100, 4)}, max_bars_back=1000, max_labels_count=500)
 
 // === 1. RÉGLAGES (copiés depuis l'app) ===
 M_CRT = "${METHOD_LABEL.crt}"
@@ -80,10 +80,12 @@ useFvgOb = input.bool(${b(on('fvgOb'))}, "FVG ou OB dans la zone", group=grpC, t
 useConfirm = input.bool(${b(on('confirm'))}, "Bougie de confirmation", group=grpC, tooltip="Div. cachée + OTE, Double Top, OTE + SMT")
 useClean = input.bool(${b(on('clean'))}, "Correction propre (filtre points faibles)", group=grpC, tooltip="Toutes les méthodes")
 useSmt = input.bool(${b(on('smt'))}, "Divergence SMT Or / Argent", group=grpC, tooltip="OTE + SMT uniquement")
-pairSym = input.symbol("OANDA:${pairMk.ticker}", "Métal corrélé (SMT)", group=grpC)
+autoPair = input.bool(true, "Paire SMT auto (Or ↔ Argent)", group=grpC, tooltip="Graphique argent → compare avec l'or, et inversement")
+pairIn = input.symbol("OANDA:${pairMk.ticker}", "Métal corrélé (si auto = off)", group=grpC)
 rrMode = input.string("${rrOpt}", "Objectif", options=["1:1.5", "1:2", "1:3", "Structure"], group=grpX, tooltip="Structure = sommet/creux de l'impulsion (min 1R, sinon 2R)")
 partialBE = input.bool(${b(opts.partialBE)}, "50% à 1R puis breakeven", group=grpX)
-spreadPx = input.float(${num(mk.spread, dec)}, "Spread (en prix)", step=0.01, group=grpX)
+autoSpread = input.bool(true, "Spread auto (Or 0.30 / Argent 0.03)", group=grpX)
+spreadIn = input.float(${num(mk.spread, dec)}, "Spread manuel (en prix)", step=0.01, group=grpX)
 riskPct = input.float(1.0, "Risque par trade (%)", step=0.25, group=grpX)
 startTime = input.time(timestamp("${pineDate(startMs)}"), "Début du test", group=grpX, tooltip="Change cette date pour tester 1 mois, 3 mois, 6 mois…")
 useNews = input.bool(${b(opts.newsFilter)}, "Bloquer les entrées près des news", group=grpN, tooltip="Pas d'entrée 2h avant / 1h après FOMC, CPI, NFP")
@@ -119,6 +121,13 @@ newsNow = newsNear(time_close)
 
 atrV = ta.atr(14)
 rsiV = ta.rsi(close, 14)
+// Métal du graphique: règle automatiquement spread et paire SMT
+isSilver = str.contains(syminfo.ticker, "XAG") or str.contains(syminfo.ticker, "SILVER") or str.contains(syminfo.ticker, "SI1")
+isGold = str.contains(syminfo.ticker, "XAU") or str.contains(syminfo.ticker, "GOLD") or str.contains(syminfo.ticker, "GC1")
+pairSym = autoPair ? (isSilver ? "OANDA:XAUUSD" : "OANDA:XAGUSD") : pairIn
+spreadPx = autoSpread ? (isSilver ? 0.03 : isGold ? 0.30 : syminfo.mintick * 10) : spreadIn
+genFor = "${mk.ticker}"
+wrongMetal = (genFor == "XAUUSD" and isSilver) or (genFor == "XAGUSD" and isGold)
 [pairHi, pairLo] = request.security(pairSym, timeframe.period, [high, low], gaps=barmerge.gaps_on, lookahead=barmerge.lookahead_off)
 
 // Historique ATR / RSI / métal corrélé (buffer glissant indexé par bar_index)
@@ -144,9 +153,16 @@ pxH(int i, float sg) => sg > 0 ? high[bar_index - i] : -low[bar_index - i]
 pxL(int i, float sg) => sg > 0 ? low[bar_index - i] : -high[bar_index - i]
 pxO(int i, float sg) => sg * open[bar_index - i]
 pxC(int i, float sg) => sg * close[bar_index - i]
-rsiAt(int i, float sg) => sg > 0 ? array.get(bRsi, i - bBase) : 100 - array.get(bRsi, i - bBase)
-atrAt(int i) => array.get(bAtr, i - bBase)
-pairLowAt(int i, float sg) => sg > 0 ? array.get(bPLo, i - bBase) : -array.get(bPHi, i - bBase)
+// Lectures sûres: na si l'indice sort de l'historique (évite l'erreur RE10045)
+bufGet(array<float> a, int i) =>
+    float v = na
+    j = i - bBase
+    if j >= 0 and j < array.size(a)
+        v := array.get(a, j)
+    v
+rsiAt(int i, float sg) => sg > 0 ? bufGet(bRsi, i) : 100 - bufGet(bRsi, i)
+atrAt(int i) => bufGet(bAtr, i)
+pairLowAt(int i, float sg) => sg > 0 ? bufGet(bPLo, i) : -bufGet(bPHi, i)
 
 // Swings fractals 3/3 (connus 3 bougies après le pivot)
 var array<int> pvHiI = array.new<int>()
@@ -401,7 +417,9 @@ detect(array<int> hiI, array<float> hiP, array<int> loI, array<float> loP, float
     int dKey = na
     float dStop = na
     float dTgt = na
-    if methodSel == M_CRT
+    if bar_index < WARMUP or na(atrV)
+        dSig := false
+    else if methodSel == M_CRT
         [s1, k1, st1, tg1] = detCrt(hiI, hiP, loI, loP, sg)
         dSig := s1
         dKey := k1
@@ -517,7 +535,7 @@ showLv = strategy.position_size != 0 or goDir != 0
 plot(showLv ? tStop : na, "Stop", color=color.red, style=plot.style_linebr, linewidth=2)
 plot(showLv ? tTgt : na, "Objectif", color=color.lime, style=plot.style_linebr, linewidth=2)
 
-var table hud = table.new(position.bottom_right, 2, 7, bgcolor=color.new(#0f172a, 10), border_color=color.new(#facc15, 60), border_width=1)
+var table hud = table.new(position.bottom_right, 2, 8, bgcolor=color.new(#0f172a, 10), border_color=color.new(#facc15, 60), border_width=1)
 if barstate.islast
     ct = strategy.closedtrades
     winR = ct > 0 ? 100.0 * strategy.wintrades / ct : 0.0
@@ -537,6 +555,9 @@ if barstate.islast
     table.cell(hud, 1, 5, "-" + str.tostring(ddPct, "#.0") + "%", text_color=ddPct <= 5 ? color.aqua : color.orange, text_size=size.small)
     verdict = ct < 15 ? "Trop peu de trades" : pf >= 1.5 ? "Edge positif ✓" : pf >= 1.1 ? "Edge faible" : "Pas d'edge ✗"
     table.cell(hud, 0, 6, "Verdict", text_color=color.silver, text_size=size.small)
+    if wrongMetal
+        table.cell(hud, 0, 7, "⚠ Attention", text_color=color.orange, text_size=size.small)
+        table.cell(hud, 1, 7, "Script généré pour " + genFor + " — régénère-le pour ce métal", text_color=color.orange, text_size=size.small)
     table.cell(hud, 1, 6, verdict, text_color=pf >= 1.5 and ct >= 15 ? color.lime : pf >= 1.1 ? color.yellow : color.red, text_size=size.small)
 `;
   }

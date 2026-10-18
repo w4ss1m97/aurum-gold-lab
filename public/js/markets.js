@@ -5,8 +5,8 @@
   const A = (g.Aurum = g.Aurum || {});
 
   A.MARKETS = {
-    XAU: { id: 'XAU', apiSymbol: 'XAU/USD', name: 'Gold', ticker: 'XAUUSD', contractOz: 100, spread: 0.30, decimals: 2, pair: 'XAG' },
-    XAG: { id: 'XAG', apiSymbol: 'XAG/USD', name: 'Silver', ticker: 'XAGUSD', contractOz: 5000, spread: 0.03, decimals: 3, pair: 'XAU' },
+    XAU: { id: 'XAU', apiSymbol: 'XAU/USD', name: 'Gold', ticker: 'XAUUSD', contractOz: 100, spread: 0.30, decimals: 2, pair: 'XAG', refPrice: 4000 },
+    XAG: { id: 'XAG', apiSymbol: 'XAG/USD', name: 'Silver', ticker: 'XAGUSD', contractOz: 5000, spread: 0.03, decimals: 3, pair: 'XAU', refPrice: 50 },
   };
 
   const MIN = 60 * 1000, HOUR = 60 * MIN, DAY = 24 * HOUR;
