@@ -4,32 +4,24 @@
 
 const state = {
   activeTab: 'lab',
-  goldPrice: 2748.40,
+  prices: { XAU: null, XAG: null },
   redNewsLockoutActive: false,
 
-  // 1. Setup Lab Configuration (Côté Technique + Côté Macro)
+  // 1. Backtest Lab configuration (persisted per device)
   lab: {
-    selectedSetupId: 'sweep',
-    rrTarget: 2.5,
+    market: 'XAU',
+    strategyId: 'crt',
+    setupTF: 'H4',
+    entryTF: 'M15',
+    period: '3M',
+    rr: 2,
     partialBE: true,
-    sessions: {
-      london: true,
-      nyOpen: true,
-      nyPM: false,
-    },
-    techFilters: {
-      htfEma200: true,
-      atrGate: true,
-      displacement: true,
-    },
-    macroFilters: {
-      dxyInverse: true,
-      fedYields: true,
-      inflationChomage: true,
-      consumerIndex: false,
-      geoShield: true,
-      newsBlackout: true,
-    }
+    newsFilter: false,
+    cfgByStrategy: {},
+    results: null,
+    running: false,
+    status: '',
+    showAllTrades: false,
   },
 
   // 2. Live Macro, Fed, Inflation, Chômage & Geopolitics Regime State
@@ -165,78 +157,6 @@ const state = {
   ]
 };
 
-// Setup Definitions
-const SETUPS = {
-  sweep: {
-    id: 'sweep',
-    name: '1. Asian Liquidity Sweep (SMC)',
-    shortName: 'Asian Sweep (SMC)',
-    desc: 'Sweeps Asian High/Low + Reclaims range with 5m/15m MSS & FVG',
-    baseWinRate: 52.5,
-    basePF: 1.48,
-    baseTrades: 210,
-    baseDD: 7.4,
-    checklist: [
-      'Asian Session High or Low cleanly swept?',
-      '5m / 15m Displacement candle closed back inside range (MSS)?',
-      'Entry inside Fair Value Gap (FVG) or Order Block?',
-      'Macro Aligned: DXY & US10Y moving opposite to Gold?',
-      'Geopolitical & Red-Folder USD News Shield is Clear?'
-    ]
-  },
-  fvg: {
-    id: 'fvg',
-    name: '2. Fair Value Gap (FVG) + BOS',
-    shortName: 'FVG + Structure Shift',
-    desc: 'Institutional 3-candle imbalance continuation in NY/London Killzone',
-    baseWinRate: 50.8,
-    basePF: 1.42,
-    baseTrades: 245,
-    baseDD: 8.1,
-    checklist: [
-      'Clean Break of Structure (BOS) in HTF direction?',
-      'Unmitigated 5m/15m Fair Value Gap (FVG) formed with high volume?',
-      'Limit/Market entry at 50% Consequent Encroachment (CE)?',
-      'Macro Aligned: Fed Yields (US10Y) & Inflation/Chômage supportive?',
-      'No Tier-1 Red USD News within 15 minutes?'
-    ]
-  },
-  orb: {
-    id: 'orb',
-    name: '3. Session Opening Breakout (ORB)',
-    shortName: 'London/NY Breakout',
-    desc: 'First 30-min London (02:00) or NY (08:00) Box Momentum Breakout',
-    baseWinRate: 48.2,
-    basePF: 1.38,
-    baseTrades: 195,
-    baseDD: 8.6,
-    checklist: [
-      'Opening 30-min range is compact (< $12.00 on Gold)?',
-      'Full 15m candle close outside Opening Box with ATR expansion?',
-      '1H EMA 200 aligned with breakout direction?',
-      'Macro Score >= +1 for Longs (or <= -1 for Shorts)?',
-      'Outside 08:30 EST CPI/NFP initial whipsaw candle?'
-    ]
-  },
-  ema: {
-    id: 'ema',
-    name: '4. EMA 20/50 + RSI Pullback',
-    shortName: 'EMA 20/50 + RSI Trend',
-    desc: 'Quantitative trend pullback to 20 EMA with RSI 45-70 momentum',
-    baseWinRate: 49.5,
-    basePF: 1.36,
-    baseTrades: 260,
-    baseDD: 7.9,
-    checklist: [
-      '20 EMA cleanly above 50 EMA & 1H 200 EMA?',
-      'Price pulled back to tap 20 EMA and rejected with bullish close?',
-      'RSI between 48 and 68 (momentum without exhaustion)?',
-      'DXY & US10Y Treasury Yields confirming Gold trend?',
-      'News Shield Clear (No FOMC / CPI in next 15 mins)?'
-    ]
-  }
-};
-
 // ============================================================================
 // TAB NAVIGATION & DRAWER CONTROLS
 // ============================================================================
@@ -269,378 +189,432 @@ function showToast(msg) {
 }
 
 // ============================================================================
-// TAB 1: SETUP LAB RENDERING & INSTANT BACKTEST SIMULATION ENGINE
+// TAB 1: BACKTEST LAB — real candles (Twelve Data) × Firas methods
 // ============================================================================
+const PERIODS = { '1M': 30, '3M': 91, '6M': 182, '1Y': 365 };
+const DAY_MS = 24 * 3600 * 1000;
+const SETUP_TFS = ['H1', 'H4', 'D1'];
+const ENTRY_TFS = ['SAME', 'M5', 'M15', 'H1'];
+const M5_MAX_DAYS = 91; // keeps M5 downloads within the free API limits
+
+const LAB_PREFS_KEY = 'aurum.lab.prefs';
+function saveLabPrefs() {
+  const { market, strategyId, setupTF, entryTF, period, rr, partialBE, newsFilter, cfgByStrategy } = state.lab;
+  try { localStorage.setItem(LAB_PREFS_KEY, JSON.stringify({ market, strategyId, setupTF, entryTF, period, rr, partialBE, newsFilter, cfgByStrategy })); } catch (e) { /* ignore */ }
+}
+function loadLabPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(LAB_PREFS_KEY) || 'null');
+    if (p && Aurum.STRATEGIES[p.strategyId]) Object.assign(state.lab, p);
+  } catch (e) { /* ignore */ }
+}
+
+function currentStrategy() { return Aurum.STRATEGIES[state.lab.strategyId]; }
+function currentCfg() {
+  const id = state.lab.strategyId;
+  if (!state.lab.cfgByStrategy[id]) state.lab.cfgByStrategy[id] = Aurum.strategy.defaultConfig(id);
+  return state.lab.cfgByStrategy[id];
+}
+function entryAllowed(tf) {
+  if (tf === 'SAME') return true;
+  return Aurum.TIMEFRAMES[tf].ms < Aurum.TIMEFRAMES[state.lab.setupTF].ms;
+}
+function periodAllowed(p) {
+  return !(state.lab.entryTF === 'M5' && PERIODS[p] > M5_MAX_DAYS);
+}
+function tfLabel(tf) { return tf === 'SAME' ? 'Same TF' : Aurum.TIMEFRAMES[tf].label; }
+
+function seg(items, activeVal, onclick, labelFn, disabledFn) {
+  return items.map((v) => {
+    const active = v === activeVal;
+    const disabled = disabledFn ? disabledFn(v) : false;
+    const cls = disabled
+      ? 'bg-slate-900/40 border-slate-800/60 text-slate-600 cursor-not-allowed'
+      : active
+      ? 'bg-yellow-400 border-yellow-400 text-slate-950'
+      : 'bg-slate-900 border-slate-700 text-slate-200 active:scale-95';
+    return `<button ${disabled ? 'disabled' : `onclick="${onclick}('${v}')"`} class="flex-1 h-11 rounded-xl border text-sm font-bold transition ${cls}">${labelFn ? labelFn(v) : v}</button>`;
+  }).join('');
+}
+
 function renderSetupLab() {
-  // 1. Setup Selector Cards
-  const setupGrid = document.getElementById('setupSelectorGrid');
-  setupGrid.innerHTML = Object.values(SETUPS).map(s => {
-    const active = state.lab.selectedSetupId === s.id;
-    return `
-      <button onclick="selectSetup('${s.id}')" class="p-2.5 rounded-xl text-left border transition active:scale-95 ${
-        active
-          ? 'bg-yellow-500/15 border-yellow-400 text-white shadow-md shadow-yellow-500/10'
-          : 'bg-slate-900/80 border-slate-800 text-slate-300'
-      }">
-        <div class="text-xs font-extrabold ${active ? 'text-yellow-400' : 'text-white'}">${s.shortName}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5 line-clamp-2">${s.desc}</div>
-      </button>
-    `;
+  const L = state.lab;
+  const strat = currentStrategy();
+  const cfg = currentCfg();
+
+  document.getElementById('labMarket').innerHTML = Object.values(Aurum.MARKETS).map((m) => {
+    const active = L.market === m.id;
+    return `<button onclick="labSet('market','${m.id}')" class="flex-1 rounded-2xl border p-3 text-left transition active:scale-95 ${active ? 'bg-yellow-400/15 border-yellow-400' : 'bg-slate-900 border-slate-700'}">
+      <div class="text-base font-bold ${active ? 'text-yellow-300' : 'text-white'}">${m.id === 'XAU' ? '🥇' : '🥈'} ${m.name}</div>
+      <div class="text-xs text-slate-400 mt-0.5">${m.ticker}</div>
+    </button>`;
   }).join('');
 
-  // 2. Killzone Sessions
-  const sessDefs = [
-    { key: 'london', label: '🇬🇧 London (02-05:30)' },
-    { key: 'nyOpen', label: '🇺🇸 NY Open (08-11:30)' },
-    { key: 'nyPM',   label: '🌇 NY PM (13:30-16)' },
-  ];
-  document.getElementById('sessionToggles').innerHTML = sessDefs.map(sd => {
-    const on = state.lab.sessions[sd.key];
-    return `
-      <button onclick="toggleSession('${sd.key}')" class="py-2 px-1.5 rounded-xl text-[10px] font-bold border transition active:scale-95 ${
-        on ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300' : 'bg-slate-900 border-slate-800 text-slate-500'
-      }">${sd.label}</button>
-    `;
-  }).join('');
-
-  // 3. Technical Filters
-  const techDefs = [
-    { key: 'htfEma200', title: 'HTF Trend Alignment (1H EMA 200)', desc: 'Only Long above 1H EMA 200 / Short below (+6.5% Win Rate)' },
-    { key: 'atrGate', title: 'ATR Volatility Gate (Avoid Chop)', desc: 'Requires Gold ATR(14) > 0.7x average to avoid dead ranges' },
-    { key: 'displacement', title: 'Institutional Displacement Candle', desc: 'Requires body > 65% of candle range on trigger bar' }
-  ];
-  document.getElementById('techFilterToggles').innerHTML = techDefs.map(tf => {
-    const on = state.lab.techFilters[tf.key];
-    return `
-      <div onclick="toggleTechFilter('${tf.key}')" class="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/85 border ${on ? 'border-slate-700' : 'border-slate-800/60'} cursor-pointer active:scale-[0.99] transition">
-        <div>
-          <div class="text-xs font-bold text-white">${tf.title}</div>
-          <div class="text-[10px] text-slate-400">${tf.desc}</div>
-        </div>
-        <span class="px-2 py-0.5 rounded-md text-[10px] font-extrabold ${on ? 'bg-yellow-400 text-slate-950' : 'bg-slate-800 text-slate-500'}">${on ? 'ON' : 'OFF'}</span>
+  document.getElementById('labStrategies').innerHTML = Object.values(Aurum.STRATEGIES).map((s) => {
+    const active = L.strategyId === s.id;
+    return `<button onclick="labSet('strategyId','${s.id}')" class="w-full rounded-2xl border p-3 text-left transition active:scale-[0.99] ${active ? 'bg-yellow-400/10 border-yellow-400' : 'bg-slate-900 border-slate-700'}">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-[15px] font-bold ${active ? 'text-yellow-300' : 'text-white'}">${s.name}</span>
+        ${active ? '<span class="text-yellow-300 text-lg leading-none">●</span>' : ''}
       </div>
-    `;
+      <div class="text-sm text-slate-400 mt-1 leading-snug">${s.desc}</div>
+      <div class="text-xs text-slate-500 mt-1">${s.source}</div>
+    </button>`;
   }).join('');
 
-  // 4. R:R Target Selector
-  const rrs = [1.5, 2.5, 3.5];
-  document.getElementById('rrSelectorGrid').innerHTML = rrs.map(r => {
-    const active = state.lab.rrTarget === r;
-    return `
-      <button onclick="setRRTarget(${r})" class="py-1.5 rounded-xl text-xs font-extrabold border transition ${
-        active ? 'bg-yellow-400 border-yellow-400 text-slate-950' : 'bg-slate-900 border-slate-800 text-slate-300'
-      }">1 : ${r} R:R</button>
-    `;
-  }).join('');
-  document.getElementById('rrSelectedLabel').textContent = `${state.lab.rrTarget}R ${state.lab.partialBE ? '+ 50% Partial @ 1R (BE)' : '(Full Target)'}`;
+  document.getElementById('labSetupTF').innerHTML = seg(SETUP_TFS, L.setupTF, 'labSetTF', tfLabel);
+  document.getElementById('labEntryTF').innerHTML = seg(ENTRY_TFS, L.entryTF, 'labSetEntry', tfLabel, (v) => !entryAllowed(v));
+  document.getElementById('labPeriod').innerHTML = seg(Object.keys(PERIODS), L.period, 'labSetPeriod', null, (v) => !periodAllowed(v));
+  document.getElementById('labPeriodNote').textContent = L.entryTF === 'M5' ? '5m entries are limited to 3 months of history (free API limits).' : '';
+  document.getElementById('labRR').innerHTML = seg(['1.5', '2', '3', 'struct'], String(L.rr), 'labSetRR', (v) => (v === 'struct' ? 'Structure' : `1:${v}`));
+  document.getElementById('labPartial').checked = L.partialBE;
+  document.getElementById('labNews').checked = L.newsFilter;
 
-  // 5. Macro, News & Geopolitical Toggles
-  const macroDefs = [
-    { key: 'dxyInverse', title: '💵 DXY (US Dollar) Inverse Alignment', desc: 'TradingView TVC:DXY < EMA50 for Gold Longs (+4.8% Win Rate)', badge: '+4.8% WR' },
-    { key: 'fedYields', title: '🏦 La Fed & US10Y Treasury Yields Filter', desc: 'TVC:US10Y falling = Dovish Fed expectations = Pro-Gold (+5.4% Win Rate)', badge: '+5.4% WR' },
-    { key: 'inflationChomage', title: '📊 Inflation (CPI) & Chômage (Jobless Claims)', desc: 'FRED:T10YIE & FRED:ICSA pro-Gold regime confirmation (+3.6% Win Rate)', badge: '+3.6% WR' },
-    { key: 'geoShield', title: '🛡️ Geopolitical Crisis Shield (VIX / Wars)', desc: 'CBOE:VIX spike blocks Gold Shorts during safe-haven panics (Cuts DD -2.1%)', badge: '-2.1% DD' },
-    { key: 'newsBlackout', title: '🚨 Red-Folder News Blackout (08:30 & 14:00 EST)', desc: 'Blocks entries ±20m around CPI, NFP Chômage & FOMC rate decisions', badge: 'Prop Safe' },
-  ];
-  document.getElementById('macroFilterToggles').innerHTML = macroDefs.map(mf => {
-    const on = state.lab.macroFilters[mf.key];
-    return `
-      <div onclick="toggleMacroFilter('${mf.key}')" class="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/90 border ${on ? 'border-emerald-500/40' : 'border-slate-800'} cursor-pointer active:scale-[0.99] transition">
-        <div class="pr-2">
-          <div class="flex items-center gap-1.5">
-            <span class="text-xs font-bold text-white">${mf.title}</span>
-            <span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">${mf.badge}</span>
-          </div>
-          <div class="text-[10px] text-slate-400 mt-0.5">${mf.desc}</div>
-        </div>
-        <span class="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-extrabold ${on ? 'bg-emerald-400 text-slate-950' : 'bg-slate-800 text-slate-500'}">${on ? 'ON' : 'OFF'}</span>
+  document.getElementById('labConfluences').innerHTML = strat.confluences.map((c) => {
+    const on = cfg[c.key];
+    return `<button onclick="labToggleConf('${c.key}')" class="w-full flex items-center justify-between gap-3 p-3 rounded-xl border text-left transition active:scale-[0.99] ${on ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-slate-900 border-slate-700'}">
+      <span class="text-sm font-semibold ${on ? 'text-white' : 'text-slate-400'}">${c.label}</span>
+      <span class="shrink-0 w-12 h-7 rounded-full p-1 transition ${on ? 'bg-emerald-400' : 'bg-slate-700'}"><span class="block w-5 h-5 rounded-full bg-white transition ${on ? 'translate-x-5' : ''}"></span></span>
+    </button>`;
+  }).join('');
+
+  document.getElementById('labRules').innerHTML = strat.rules.map((r, i) => `<li class="flex gap-2"><span class="text-yellow-400 font-bold">${i + 1}.</span><span>${r}</span></li>`).join('');
+
+  const key = Aurum.data.getApiKey();
+  document.getElementById('apiKeyInput').value = key ? '••••••••' + key.slice(-4) : '';
+  document.getElementById('apiKeyState').innerHTML = key
+    ? '<span class="text-emerald-400 font-semibold">Key saved on this device ✓</span>'
+    : '<span class="text-amber-300 font-semibold">No key yet — backtests need one (free).</span>';
+
+  const busy = L.running;
+  document.getElementById('runBtn').disabled = busy;
+  document.getElementById('compareBtn').disabled = busy;
+  document.getElementById('runBtn').classList.toggle('opacity-60', busy);
+  document.getElementById('compareBtn').classList.toggle('opacity-60', busy);
+  document.getElementById('labStatus').textContent = L.status || '';
+
+  renderLabResults();
+}
+
+function labSet(field, val) {
+  state.lab[field] = val;
+  state.lab.results = null;
+  if (field === 'strategyId') { state.pad.checks = [true, true, true, true, true]; renderTradePad(); }
+  if (field === 'market') { updateHeaderMarket(); recalcOrderPad(); }
+  saveLabPrefs();
+  renderSetupLab();
+}
+function labSetTF(tf) {
+  state.lab.setupTF = tf;
+  if (!entryAllowed(state.lab.entryTF)) state.lab.entryTF = 'SAME';
+  labSet('setupTF', tf);
+}
+function labSetEntry(tf) {
+  state.lab.entryTF = tf;
+  if (!periodAllowed(state.lab.period)) state.lab.period = '3M';
+  labSet('entryTF', tf);
+}
+function labSetPeriod(p) { labSet('period', p); }
+function labSetRR(v) { labSet('rr', v === 'struct' ? 'struct' : parseFloat(v)); recalcOrderPad(); }
+function labToggleNews() { labSet('newsFilter', document.getElementById('labNews').checked); }
+function labTogglePartial() { labSet('partialBE', document.getElementById('labPartial').checked); recalcOrderPad(); }
+function labToggleConf(key) {
+  const cfg = currentCfg();
+  cfg[key] = !cfg[key];
+  state.lab.results = null;
+  saveLabPrefs();
+  renderSetupLab();
+}
+
+function saveApiKey() {
+  const v = document.getElementById('apiKeyInput').value.trim();
+  if (!v || v.startsWith('••')) { showToast('Paste your Twelve Data API key first'); return; }
+  Aurum.data.setApiKey(v);
+  showToast('API key saved on this device');
+  renderSetupLab();
+  refreshLivePrices();
+}
+async function clearMarketCache() {
+  await Aurum.data.clearCache();
+  showToast('Downloaded candles cleared');
+}
+
+function setLabStatus(msg) {
+  state.lab.status = msg;
+  const el = document.getElementById('labStatus');
+  if (el) el.textContent = msg;
+}
+
+async function runLab(compareAll) {
+  const L = state.lab;
+  if (!Aurum.data.getApiKey()) {
+    document.getElementById('dataSettings').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    showToast('Add your free Twelve Data API key to run backtests');
+    return;
+  }
+  const strat = currentStrategy();
+  const cfg = { ...currentCfg() };
+  const htfMs = Aurum.TIMEFRAMES[L.setupTF].ms;
+  const sameTF = L.entryTF === 'SAME';
+  const periods = compareAll ? Object.keys(PERIODS).filter(periodAllowed) : [L.period];
+  const maxDays = Math.max(...periods.map((p) => PERIODS[p]));
+  const now = Date.now();
+  const histStart = now - maxDays * DAY_MS;
+
+  L.running = true;
+  setLabStatus('Preparing…');
+  renderSetupLab();
+  try {
+    const onStatus = (m) => setLabStatus(m);
+    const htf = await Aurum.data.getBars(L.market, L.setupTF, histStart - 120 * htfMs, onStatus);
+    const ltf = sameTF ? null : await Aurum.data.getBars(L.market, L.entryTF, histStart - 4 * htfMs, onStatus);
+    const pairId = Aurum.MARKETS[L.market].pair;
+    const pairHtf = strat.needsPair && cfg.smt ? await Aurum.data.getBars(pairId, L.setupTF, histStart - 120 * htfMs, onStatus) : null;
+    if (htf.length < 80) throw new Error('Not enough candles returned for this timeframe');
+    setLabStatus('Running backtest…');
+    await new Promise((r) => setTimeout(r, 30));
+
+    const base = {
+      strategy: strat, htf, ltf, pairHtf, htfMs,
+      ltfMs: sameTF ? 0 : Aurum.TIMEFRAMES[L.entryTF].ms,
+      rr: L.rr, partialBE: L.partialBE, newsFilter: L.newsFilter, spread: Aurum.MARKETS[L.market].spread, riskPct: 1,
+    };
+    const startFor = (p) => now - PERIODS[p] * DAY_MS;
+    const main = Aurum.backtest.run({ ...base, cfg, startMs: startFor(L.period) });
+
+    const compare = compareAll
+      ? periods.map((p) => ({ period: p, stats: Aurum.backtest.run({ ...base, cfg, startMs: startFor(p) }).stats }))
+      : null;
+
+    const ablation = strat.confluences.filter((c) => cfg[c.key]).map((c) => ({
+      label: c.label,
+      stats: Aurum.backtest.run({ ...base, cfg: { ...cfg, [c.key]: false }, startMs: startFor(L.period) }).stats,
+    }));
+    const allOff = {};
+    strat.confluences.forEach((c) => (allOff[c.key] = false));
+    ablation.push({ label: 'Pattern only (no confluences)', stats: Aurum.backtest.run({ ...base, cfg: allOff, startMs: startFor(L.period) }).stats });
+    ablation.push({
+      label: L.newsFilter ? 'Without news filter' : 'With news filter (skip red news)',
+      stats: Aurum.backtest.run({ ...base, newsFilter: !L.newsFilter, cfg, startMs: startFor(L.period) }).stats,
+    });
+
+    const analysis = Aurum.analysis.analyze({
+      trades: main.trades, stats: main.stats, htf, htfMs, htfLabel: tfLabel(L.setupTF),
+      market: Aurum.MARKETS[L.market], startMs: startFor(L.period),
+      compare, ablation, newsSkipped: main.newsSkipped, newsFilter: L.newsFilter,
+    });
+
+    L.results = {
+      ...main, compare, ablation, analysis,
+      meta: {
+        market: L.market, strategyId: L.strategyId, setupTF: L.setupTF, entryTF: L.entryTF,
+        period: L.period, rr: L.rr, partialBE: L.partialBE, newsFilter: L.newsFilter,
+        from: htf.length ? startFor(L.period) : now, to: htf[htf.length - 1].t,
+      },
+    };
+    L.showAllTrades = false;
+    setLabStatus('');
+  } catch (e) {
+    const msg = e.message === 'NO_KEY' ? 'Add your API key first' : e.message;
+    setLabStatus(`⚠️ ${msg}`);
+    showToast(msg);
+  } finally {
+    L.running = false;
+    renderSetupLab();
+    if (L.results) document.getElementById('labResults').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+const fmtR = (r) => `${r >= 0 ? '+' : ''}${r.toFixed(1)}R`;
+const fmtPF = (pf) => (isFinite(pf) ? pf.toFixed(2) : '∞');
+const fmtDate = (ms) => new Date(ms).toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
+const fmtDateTime = (ms) => new Date(ms).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+function statTile(label, value, sub, color) {
+  return `<div class="bg-slate-900 rounded-2xl p-3 border border-slate-800">
+    <div class="text-xs text-slate-400">${label}</div>
+    <div class="text-2xl font-extrabold mt-0.5 ${color}">${value}</div>
+    <div class="text-xs text-slate-500 mt-0.5">${sub}</div>
+  </div>`;
+}
+
+function equitySvg(curve) {
+  const W = 320, H = 130, pad = 8;
+  if (curve.length < 2) return `<div class="h-32 flex items-center justify-center text-sm text-slate-500">No trades to draw</div>`;
+  const min = Math.min(0, ...curve), max = Math.max(0, ...curve);
+  const span = max - min || 1;
+  const x = (i) => pad + (i / (curve.length - 1)) * (W - 2 * pad);
+  const y = (v) => H - pad - ((v - min) / span) * (H - 2 * pad);
+  const pts = curve.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const up = curve[curve.length - 1] >= 0;
+  const col = up ? '#34d399' : '#fb7185';
+  return `<svg viewBox="0 0 ${W} ${H}" class="w-full h-36">
+    <line x1="${pad}" x2="${W - pad}" y1="${y(0)}" y2="${y(0)}" stroke="#475569" stroke-width="1" stroke-dasharray="4,4"/>
+    <text x="${W - pad}" y="${y(0) - 4}" text-anchor="end" font-size="10" fill="#64748b">0R</text>
+    <polygon points="${x(0)},${y(0)} ${pts} ${x(curve.length - 1)},${y(0)}" fill="${col}" fill-opacity="0.12"/>
+    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round"/>
+    <circle cx="${x(curve.length - 1)}" cy="${y(curve[curve.length - 1])}" r="3.5" fill="${col}"/>
+  </svg>`;
+}
+
+function statsRow(label, s, highlight) {
+  const pfCol = s.n === 0 ? 'text-slate-500' : s.pf >= 1.3 ? 'text-emerald-400' : s.pf >= 1 ? 'text-yellow-300' : 'text-rose-400';
+  return `<tr class="border-t border-slate-800 ${highlight ? 'bg-yellow-400/5' : ''}">
+    <td class="py-2.5 pr-2 text-sm font-semibold text-slate-200">${label}</td>
+    <td class="py-2.5 px-1 text-sm text-right text-slate-300">${s.n}</td>
+    <td class="py-2.5 px-1 text-sm text-right text-slate-300">${s.n ? s.winRate.toFixed(0) + '%' : '—'}</td>
+    <td class="py-2.5 px-1 text-sm text-right font-bold ${pfCol}">${s.n ? fmtPF(s.pf) : '—'}</td>
+    <td class="py-2.5 pl-1 text-sm text-right font-bold ${s.netR >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.n ? fmtR(s.netR) : '—'}</td>
+  </tr>`;
+}
+const statsHead = (first) => `<tr class="text-xs text-slate-500"><th class="text-left font-medium pb-1">${first}</th><th class="text-right font-medium pb-1">Trades</th><th class="text-right font-medium pb-1">Win</th><th class="text-right font-medium pb-1">PF</th><th class="text-right font-medium pb-1">Net</th></tr>`;
+
+function renderLabResults() {
+  const box = document.getElementById('labResults');
+  const R = state.lab.results;
+  if (!R) {
+    box.innerHTML = `<div class="text-center py-6">
+      <div class="text-3xl">📊</div>
+      <div class="text-base font-semibold text-white mt-2">No results yet</div>
+      <div class="text-sm text-slate-400 mt-1">Pick a market, a method and timeframes, then tap <b class="text-yellow-300">Run backtest</b>.</div>
+    </div>`;
+    return;
+  }
+  const s = R.stats, m = R.meta;
+  const strat = Aurum.STRATEGIES[m.strategyId];
+  const v = Aurum.backtest.verdict(s);
+  const vStyle = {
+    good: 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200',
+    ok: 'bg-yellow-500/10 border-yellow-500/40 text-yellow-100',
+    bad: 'bg-rose-500/10 border-rose-500/40 text-rose-200',
+    weak: 'bg-slate-800 border-slate-700 text-slate-200',
+    none: 'bg-slate-800 border-slate-700 text-slate-200',
+  }[v.level];
+  const vIcon = { good: '✅', ok: '⚖️', bad: '❌', weak: '⚠️', none: 'ℹ️' }[v.level];
+  const mk = Aurum.MARKETS[m.market];
+  const closed = R.trades.filter((t) => !t.open);
+  const openT = R.trades.find((t) => t.open);
+  const list = [...closed].reverse();
+  const shown = state.lab.showAllTrades ? list : list.slice(0, 12);
+
+  box.innerHTML = `
+    <div>
+      <div class="text-sm text-slate-400">${mk.name} · ${tfLabel(m.setupTF)} setup → ${tfLabel(m.entryTF)} entry · ${m.rr === 'struct' ? 'Structure target' : '1:' + m.rr}${m.partialBE ? ' · 50% at 1R' : ''}</div>
+      <div class="text-lg font-bold text-white mt-0.5">${strat.name}</div>
+      <div class="text-sm text-slate-400">Last ${m.period} · ${fmtDate(m.from)} → ${fmtDate(m.to)}</div>
+    </div>
+
+    <div class="rounded-2xl border p-3 text-sm leading-snug ${vStyle}">${vIcon} ${v.text}</div>
+
+    <div class="grid grid-cols-2 gap-2">
+      ${statTile('Win rate', s.n ? s.winRate.toFixed(0) + '%' : '—', `${s.wins} won · ${s.losses} lost · ${s.be} BE`, 'text-white')}
+      ${statTile('Profit factor', s.n ? fmtPF(s.pf) : '—', 'Gains ÷ losses', s.pf >= 1.3 ? 'text-emerald-400' : s.pf >= 1 ? 'text-yellow-300' : 'text-rose-400')}
+      ${statTile('Net result', s.n ? fmtR(s.netR) : '—', `${s.returnPct >= 0 ? '+' : ''}${s.returnPct.toFixed(1)}% at 1% risk`, s.netR >= 0 ? 'text-emerald-400' : 'text-rose-400')}
+      ${statTile('Max drawdown', s.n ? '-' + s.maxDDR.toFixed(1) + 'R' : '—', `-${s.maxDDPct.toFixed(1)}% at 1% risk`, s.maxDDPct <= 5 ? 'text-sky-300' : 'text-amber-300')}
+    </div>
+    <div class="grid grid-cols-3 gap-2 text-center">
+      <div class="bg-slate-900 rounded-xl p-2 border border-slate-800"><div class="text-xs text-slate-400">Trades</div><div class="text-base font-bold text-white">${s.n}</div><div class="text-xs text-slate-500">${s.longs}L / ${s.shorts}S</div></div>
+      <div class="bg-slate-900 rounded-xl p-2 border border-slate-800"><div class="text-xs text-slate-400">Avg / trade</div><div class="text-base font-bold ${s.avgR >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.n ? fmtR(s.avgR).replace('.0R', 'R') : '—'}</div><div class="text-xs text-slate-500">${s.avgR.toFixed(2)}R</div></div>
+      <div class="bg-slate-900 rounded-xl p-2 border border-slate-800"><div class="text-xs text-slate-400">Loss streak</div><div class="text-base font-bold text-white">${s.maxLossStreak}</div><div class="text-xs text-slate-500">~${s.avgHoldH.toFixed(0)}h hold</div></div>
+    </div>
+
+    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
+      <div class="text-sm font-semibold text-slate-200 mb-1">Equity curve (cumulative R)</div>
+      ${equitySvg(s.curve)}
+    </div>
+
+    ${expertBlock(R)}
+
+    ${R.compare ? `
+    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
+      <div class="text-sm font-semibold text-slate-200">Same rules across periods</div>
+      <div class="text-xs text-slate-500 mb-2">A real edge stays positive in every window.</div>
+      <table class="w-full">${statsHead('Period')}${R.compare.map((c) => statsRow('Last ' + c.period, c.stats, c.period === m.period)).join('')}</table>
+    </div>` : ''}
+
+    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
+      <div class="text-sm font-semibold text-slate-200">Which rule adds edge?</div>
+      <div class="text-xs text-slate-500 mb-2">Same test, removing one confluence at a time. If PF drops without a rule, that rule matters.</div>
+      <table class="w-full">${statsHead('Test')}${statsRow('All your rules', s, true)}${R.ablation.map((a) => statsRow(a.label.startsWith('Pattern') || a.label.includes('news filter') ? a.label : 'Without: ' + a.label, a.stats)).join('')}</table>
+    </div>
+
+    <div class="bg-slate-950 rounded-2xl p-3 border border-slate-800">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold text-slate-200">Trades (${closed.length})</div>
+        <div class="text-xs text-slate-500">newest first</div>
       </div>
-    `;
-  }).join('');
+      ${openT ? `<div class="mb-2 p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sm text-sky-200">🔵 Open now: ${openT.side} @ ${openT.entry.toFixed(mk.decimals)} · SL ${openT.stop.toFixed(mk.decimals)} · TP ${openT.target.toFixed(mk.decimals)}</div>` : ''}
+      <div class="space-y-1.5">
+        ${shown.length ? shown.map((t) => `
+          <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded-md text-xs font-bold ${t.dir === 1 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${t.side}</span>
+                <span class="text-sm text-slate-300">${fmtDateTime(t.entryTime)}</span>
+              </div>
+              <span class="text-base font-bold ${t.r > 0.05 ? 'text-emerald-400' : t.r < -0.05 ? 'text-rose-400' : 'text-slate-300'}">${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R</span>
+            </div>
+            <div class="text-xs text-slate-400 mt-1">${t.entry.toFixed(mk.decimals)} → ${t.exitPrice.toFixed(mk.decimals)} · ${t.outcome === 'TP' ? 'Target hit' : t.outcome === 'BE' ? 'Partial + breakeven' : 'Stopped'} · ${t.trigger}</div>
+            <div class="text-xs text-slate-500">${t.reasons.join(' · ')}</div>
+            <div class="flex flex-wrap gap-1 mt-1.5">${Aurum.analysis.tradeChips(t).map((c) => `<span class="px-1.5 py-0.5 rounded-md text-[11px] font-medium ${CHIP[c.tone]}">${c.text}</span>`).join('')}</div>
+          </div>`).join('') : '<div class="text-sm text-slate-500 py-2">No closed trades in this period.</div>'}
+      </div>
+      ${list.length > 12 ? `<button onclick="state.lab.showAllTrades=!state.lab.showAllTrades;renderLabResults()" class="w-full mt-2 h-10 rounded-xl bg-slate-800 text-sm font-semibold text-slate-200">${state.lab.showAllTrades ? 'Show fewer' : `Show all ${list.length} trades`}</button>` : ''}
+    </div>
 
-  // Run Backtest Simulation & Compile Pine Script
-  runBacktestSimulation();
-  compilePineScriptPreview();
-}
-
-function selectSetup(id) {
-  state.lab.selectedSetupId = id;
-  renderSetupLab();
-  renderTradePad();
-}
-
-function toggleSession(key) {
-  state.lab.sessions[key] = !state.lab.sessions[key];
-  if (!state.lab.sessions.london && !state.lab.sessions.nyOpen && !state.lab.sessions.nyPM) {
-    state.lab.sessions.nyOpen = true;
-  }
-  renderSetupLab();
-}
-
-function toggleTechFilter(key) {
-  state.lab.techFilters[key] = !state.lab.techFilters[key];
-  renderSetupLab();
-}
-
-function toggleMacroFilter(key) {
-  state.lab.macroFilters[key] = !state.lab.macroFilters[key];
-  renderSetupLab();
-}
-
-function setRRTarget(r) {
-  state.lab.rrTarget = r;
-  renderSetupLab();
-  recalcOrderPad();
-}
-
-function updateLabConfig() {
-  state.lab.partialBE = document.getElementById('togglePartialBE').checked;
-  renderSetupLab();
-  recalcOrderPad();
-}
-
-// Instant Quantitative Backtest Calculator (Models real impact of filters on XAUUSD)
-function runBacktestSimulation() {
-  const setup = SETUPS[state.lab.selectedSetupId];
-  let wr = setup.baseWinRate;
-  let pf = setup.basePF;
-  let trades = setup.baseTrades;
-  let maxDD = setup.baseDD;
-
-  // Session modifiers
-  const sessCount = (state.lab.sessions.london ? 1 : 0) + (state.lab.sessions.nyOpen ? 1 : 0) + (state.lab.sessions.nyPM ? 1 : 0);
-  trades = Math.round(trades * (0.4 + sessCount * 0.28));
-  if (state.lab.sessions.nyPM) { wr -= 3.2; pf -= 0.15; maxDD += 1.1; }
-  if (state.lab.sessions.nyOpen && !state.lab.sessions.nyPM) { wr += 2.1; pf += 0.12; }
-
-  // Technical filter modifiers
-  if (state.lab.techFilters.htfEma200)    { wr += 5.8; pf += 0.34; trades = Math.round(trades * 0.78); maxDD -= 1.2; }
-  if (state.lab.techFilters.atrGate)      { wr += 3.1; pf += 0.18; trades = Math.round(trades * 0.88); maxDD -= 0.6; }
-  if (state.lab.techFilters.displacement) { wr += 2.4; pf += 0.15; trades = Math.round(trades * 0.86); }
-
-  const rawTechWR = wr;
-
-  // Macro & Geopolitical filter modifiers
-  if (state.lab.macroFilters.dxyInverse)       { wr += 4.8; pf += 0.32; trades = Math.round(trades * 0.84); maxDD -= 0.8; }
-  if (state.lab.macroFilters.fedYields)        { wr += 5.4; pf += 0.38; trades = Math.round(trades * 0.82); maxDD -= 0.9; }
-  if (state.lab.macroFilters.inflationChomage) { wr += 3.6; pf += 0.24; trades = Math.round(trades * 0.88); maxDD -= 0.5; }
-  if (state.lab.macroFilters.geoShield)        { wr += 2.2; pf += 0.21; maxDD -= 1.4; }
-  if (state.lab.macroFilters.newsBlackout)     { wr += 1.9; pf += 0.16; maxDD -= 1.1; }
-
-  // R:R & Partial BE modifiers
-  if (state.lab.rrTarget === 1.5) { wr += 6.5; }
-  if (state.lab.rrTarget === 3.5) { wr -= 5.8; pf += 0.18; }
-  if (state.lab.partialBE)        { wr += 4.2; maxDD -= 0.9; pf += 0.15; }
-
-  wr = Math.min(Math.max(wr, 38.0), 79.5);
-  pf = Math.min(Math.max(pf, 1.10), 3.45);
-  maxDD = Math.min(Math.max(maxDD, 2.1), 11.5);
-  trades = Math.max(trades, 42);
-
-  const avgWinR = state.lab.partialBE ? (0.5 * 1.0 + 0.5 * state.lab.rrTarget) : state.lab.rrTarget;
-  const avgLossR = state.lab.partialBE ? 0.82 : 1.0;
-  const wins = Math.round(trades * (wr / 100));
-  const losses = trades - wins;
-  const netR = Math.max((wins * avgWinR) - (losses * avgLossR), 8.5);
-  const netCash = Math.round(netR * 1000); // Assuming $1,000 (1% of $100k) per R
-  const macroDelta = (wr - rawTechWR).toFixed(1);
-
-  document.getElementById('btWinRate').textContent = `${wr.toFixed(1)}%`;
-  document.getElementById('btWinDelta').textContent = `+${macroDelta}% from Macro`;
-  document.getElementById('btProfitFactor').textContent = pf.toFixed(2);
-  document.getElementById('btTradesCount').textContent = `${trades} Trades`;
-  document.getElementById('btNetReturn').textContent = `+${netR.toFixed(1)}R`;
-  document.getElementById('btNetCash').textContent = `+$${netCash.toLocaleString()}`;
-  document.getElementById('btMaxDD').textContent = `-${maxDD.toFixed(1)}%`;
-
-  // Render SVG Equity Curves (Macro-Filtered vs Raw Technical)
-  const svg = document.getElementById('equityCurveSvg');
-  const ptsMacro = [];
-  const ptsTech  = [];
-  const steps = 16;
-  for (let i = 0; i <= steps; i++) {
-    const x = (i / steps) * 310 + 5;
-    const progress = i / steps;
-    const wave = Math.sin(i * 1.3) * 4;
-    const yMacro = 68 - (progress * Math.min(netR, 75) * 0.78) + wave * 0.5;
-    const yTech  = 68 - (progress * Math.min(netR * 0.48, 45) * 0.78) + wave * 1.2;
-    ptsMacro.push(`${x.toFixed(1)},${Math.max(6, Math.min(70, yMacro)).toFixed(1)}`);
-    ptsTech.push(`${x.toFixed(1)},${Math.max(12, Math.min(72, yTech)).toFixed(1)}`);
-  }
-  svg.innerHTML = `
-    <polyline fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="3,3" points="${ptsTech.join(' ')}" />
-    <polyline fill="none" stroke="#eab308" stroke-width="2.5" points="${ptsMacro.join(' ')}" />
+    <button onclick="sendLabSetupToTradePad()" class="w-full h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-bold text-sm active:scale-[0.99] transition">
+      Use this method's checklist in Trade Pad →
+    </button>
   `;
 }
 
-// ============================================================================
-// DYNAMIC PINE SCRIPT v5 COMPILER
-// ============================================================================
-function compilePineScriptPreview() {
-  const s = SETUPS[state.lab.selectedSetupId];
-  const m = state.lab.macroFilters;
-  const t = state.lab.techFilters;
+const CHIP = {
+  good: 'bg-emerald-500/15 text-emerald-300',
+  bad: 'bg-rose-500/15 text-rose-300',
+  warn: 'bg-amber-500/15 text-amber-200',
+  info: 'bg-slate-800 text-slate-300',
+};
+const TONE = {
+  good: { box: 'border-emerald-500/30 bg-emerald-500/5', icon: '✅' },
+  bad: { box: 'border-rose-500/30 bg-rose-500/5', icon: '❌' },
+  warn: { box: 'border-amber-500/30 bg-amber-500/5', icon: '⚠️' },
+  info: { box: 'border-slate-700 bg-slate-900', icon: '💡' },
+};
 
-  const code = `//@version=5
-strategy("AurumOS [${s.shortName}]", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.cash_per_order, commission_value=3.5)
-
-// === 1. TES RÉGLAGES CHOISIS DANS L'APP ===
-setupType      = input.string("${s.name}", "1. Setup Actif", options=["1. Asian Liquidity Sweep (SMC)", "2. Fair Value Gap (FVG) + BOS", "3. Session Opening Breakout (ORB)", "4. EMA 20/50 + RSI Pullback"])
-useHTFFilter   = input.bool(${t.htfEma200}, "Filtre Tendance 1H EMA 200")
-useATRFilter   = input.bool(${t.atrGate}, "Filtre Volatilité ATR (Anti-Range)")
-allowLondon    = input.bool(${state.lab.sessions.london}, "Session Londres (02:00-05:30 NY)")
-allowNYOpen    = input.bool(${state.lab.sessions.nyOpen}, "Session NY Open (08:00-11:30 NY)")
-allowNYPM      = input.bool(${state.lab.sessions.nyPM}, "Session NY PM (13:30-16:00 NY)")
-rrTarget       = input.float(${state.lab.rrTarget}, "Objectif Take Profit (R:R)")
-usePartialBE   = input.bool(${state.lab.partialBE}, "Prendre 50% à 1R + Stop à Breakeven")
-riskPct        = input.float(1.0, "Risque par Trade (%)")
-
-// === 2. FILTRES MACRO, FED, INFLATION, CHÔMAGE & GÉOPOLITIQUE ===
-useDXYFilter   = input.bool(${m.dxyInverse}, "Filtre Dollar (TVC:DXY Inverse)")
-useFedYields   = input.bool(${m.fedYields}, "Filtre Taux Fed (TVC:US10Y Inverse)")
-useEconMacro   = input.bool(${m.inflationChomage}, "Filtre Inflation (T10YIE) & Chômage (ICSA)")
-useGeoShield   = input.bool(${m.geoShield}, "Bouclier Géopolitique (VIX Panic = No Short)")
-useNewsLockout = input.bool(${m.newsBlackout}, "Bloquer Annonces 08:30 (CPI/NFP) & 14:00 (FOMC)")
-
-// --- SESSIONS & ASIAN RANGE ---
-inAsian  = not na(time(timeframe.period, "2000-0200", "America/New_York"))
-inLondon = not na(time(timeframe.period, "0200-0530", "America/New_York"))
-inNYOpen = not na(time(timeframe.period, "0800-1130", "America/New_York"))
-inNYPM   = not na(time(timeframe.period, "1330-1600", "America/New_York"))
-sessOK   = (allowLondon and inLondon) or (allowNYOpen and inNYOpen) or (allowNYPM and inNYPM)
-
-var float aHigh = na, var float aLow = na
-if inAsian
-    aHigh := not inAsian[1] ? high : math.max(nz(aHigh, high), high)
-    aLow  := not inAsian[1] ? low  : math.min(nz(aLow, low), low)
-
-inORB = not na(time(timeframe.period, "0200-0230", "America/New_York")) or not na(time(timeframe.period, "0800-0830", "America/New_York"))
-var float oHigh = na, var float oLow = na
-if inORB
-    oHigh := not inORB[1] ? high : math.max(nz(oHigh, high), high)
-    oLow  := not inORB[1] ? low  : math.min(nz(oLow, low), low)
-
-// --- DONNÉES MACRO EN DIRECT SUR TRADINGVIEW ---
-dxyC  = request.security("TVC:DXY", timeframe.period, close, ignore_invalid_symbol=true)
-dxyE  = request.security("TVC:DXY", timeframe.period, ta.ema(close, 50), ignore_invalid_symbol=true)
-dxyBull = na(dxyC) ? true : dxyC < dxyE
-dxyBear = na(dxyC) ? true : dxyC > dxyE
-
-y10C  = request.security("TVC:US10Y", "60", close, ignore_invalid_symbol=true)
-y10E  = request.security("TVC:US10Y", "60", ta.ema(close, 50), ignore_invalid_symbol=true)
-fedBull = na(y10C) ? true : y10C < y10E
-fedBear = na(y10C) ? true : y10C > y10E
-
-infC  = request.security("FRED:T10YIE", "D", close, ignore_invalid_symbol=true)
-infS  = request.security("FRED:T10YIE", "D", ta.sma(close, 20), ignore_invalid_symbol=true)
-clmC  = request.security("FRED:ICSA", "W", close, ignore_invalid_symbol=true)
-clmS  = request.security("FRED:ICSA", "W", ta.sma(close, 4), ignore_invalid_symbol=true)
-econBull = (na(infC) ? true : infC >= infS) or (na(clmC) ? true : clmC >= clmS)
-econBear = (na(infC) ? true : infC < infS) and (na(clmC) ? true : clmC < clmS)
-
-vixC  = request.security("CBOE:VIX", "60", close, ignore_invalid_symbol=true)
-vixS  = request.security("CBOE:VIX", "60", ta.sma(close, 50), ignore_invalid_symbol=true)
-geoPanic = not na(vixC) and (vixC > vixS * 1.12 or vixC > 22.0)
-
-inNews = not na(time(timeframe.period, "0820-0845", "America/New_York")) or not na(time(timeframe.period, "1350-1435", "America/New_York"))
-newsOK = not useNewsLockout or not inNews
-macroScore = (dxyBull ? 1 : -1) + (fedBull ? 1 : -1) + (econBull ? 1 : -1) + (geoPanic ? 1 : 0)
-
-mLongOK  = (not useDXYFilter or dxyBull) and (not useFedYields or fedBull) and (not useEconMacro or econBull) and newsOK
-mShortOK = (not useDXYFilter or dxyBear) and (not useFedYields or fedBear) and (not useEconMacro or econBear) and (not useGeoShield or not geoPanic) and newsOK
-
-// --- DÉTECTION DES 4 SETUPS TECHNIQUES ---
-atr = ta.atr(14), atrOK = not useATRFilter or atr > ta.sma(atr, 50) * 0.7
-htfC = request.security(syminfo.tickerid, "60", close), htfE = request.security(syminfo.tickerid, "60", ta.ema(close, 200))
-htfBull = not useHTFFilter or htfC > htfE, htfBear = not useHTFFilter or htfC < htfE
-ema20 = ta.ema(close, 20), ema50 = ta.ema(close, 50), rsi = ta.rsi(close, 14)
-
-s1L = not inAsian and not na(aLow) and low < aLow and close > aLow and close > open
-s1S = not inAsian and not na(aHigh) and high > aHigh and close < aHigh and close < open
-s2L = low > high[2] and close[1] > open[1] and (close[1] - open[1]) > atr * 0.8 and close > ema50
-s2S = high < low[2] and close[1] < open[1] and (open[1] - close[1]) > atr * 0.8 and close < ema50
-s3L = not inORB and not na(oHigh) and ta.crossover(close, oHigh)
-s3S = not inORB and not na(oLow) and ta.crossunder(close, oLow)
-s4L = ema20 > ema50 and low <= ema20 and close > ema20 and close > open and rsi > 45 and rsi < 70
-s4S = ema20 < ema50 and high >= ema20 and close < ema20 and close < open and rsi < 55 and rsi > 30
-
-trigL = setupType == "1. Asian Liquidity Sweep (SMC)" ? s1L : setupType == "2. Fair Value Gap (FVG) + BOS" ? s2L : setupType == "3. Session Opening Breakout (ORB)" ? s3L : s4L
-trigS = setupType == "1. Asian Liquidity Sweep (SMC)" ? s1S : setupType == "2. Fair Value Gap (FVG) + BOS" ? s2S : setupType == "3. Session Opening Breakout (ORB)" ? s3S : s4S
-
-goLong  = trigL and sessOK and htfBull and atrOK and mLongOK  and strategy.position_size == 0
-goShort = trigS and sessOK and htfBear and atrOK and mShortOK and strategy.position_size == 0
-
-// --- GESTION DU TRADE (SL, TP1 50% + BREAKEVEN, TP2) ---
-var float entryP = na, var float slP = na, var float tp1P = na, var float tp2P = na, var bool beHit = false
-slDist = math.max(atr * 1.5, syminfo.mintick * 20)
-
-if goLong
-    entryP := close, slP := close - slDist, tp1P := close + slDist, tp2P := close + slDist * rrTarget, beHit := false
-    qty = math.max((strategy.equity * (riskPct / 100.0)) / (slDist * syminfo.pointvalue), syminfo.mintick)
-    strategy.entry("ACHAT", strategy.long, qty=qty)
-
-if goShort
-    entryP := close, slP := close + slDist, tp1P := close - slDist, tp2P := close - slDist * rrTarget, beHit := false
-    qty = math.max((strategy.equity * (riskPct / 100.0)) / (slDist * syminfo.pointvalue), syminfo.mintick)
-    strategy.entry("VENTE", strategy.short, qty=qty)
-
-if strategy.position_size > 0
-    if usePartialBE and not beHit and high >= tp1P
-        beHit := true, slP := entryP
-    strategy.exit("TP1-L", "ACHAT", qty_percent=usePartialBE ? 50 : 0, limit=tp1P, stop=slP)
-    strategy.exit("TP2-L", "ACHAT", limit=tp2P, stop=slP)
-
-if strategy.position_size < 0
-    if usePartialBE and not beHit and low <= tp1P
-        beHit := true, slP := entryP
-    strategy.exit("TP1-S", "VENTE", qty_percent=usePartialBE ? 50 : 0, limit=tp1P, stop=slP)
-    strategy.exit("TP2-S", "VENTE", limit=tp2P, stop=slP)
-
-// --- AFFICHAGE VISUEL SUR LE GRAPHIQUE ---
-plotshape(goLong,  "BUY",  shape.labelup,   location.belowbar, color.lime, text="ACHAT", textcolor=color.black, size=size.small)
-plotshape(goShort, "SELL", shape.labeldown, location.abovebar, color.red,  text="VENTE", textcolor=color.white, size=size.small)
-plot(strategy.position_size != 0 ? slP  : na, "Stop Loss", color=color.red,   style=plot.style_linebr, linewidth=2)
-plot(strategy.position_size != 0 ? tp1P : na, "TP1 (1R)",  color=color.aqua,  style=plot.style_linebr, linewidth=1)
-plot(strategy.position_size != 0 ? tp2P : na, "TP2 Final", color=color.lime,  style=plot.style_linebr, linewidth=2)
-
-// --- TABLEAU DE BORD SIMPLE EN HAUT À DROITE ---
-var table t = table.new(position.top_right, 2, 7, bgcolor=color.new(#0f172a, 5), border_color=color.new(#eab308, 40), border_width=1)
-if barstate.islast
-    tot = strategy.closedtrades
-    wr  = tot > 0 ? (strategy.wintrades / tot) * 100.0 : 0.0
-    pf  = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0.0
-    net = strategy.netprofit
-    verdict = (wr >= 52 and pf >= 1.5) ? "✅ SETUP RENTABLE (A+)" : (pf >= 1.15) ? "⚠️ MOYEN (AJUSTER FILTRES)" : "❌ MAUVAIS SETUP (ÉVITER)"
-    vCol    = (wr >= 52 and pf >= 1.5) ? color.lime : (pf >= 1.15) ? color.yellow : color.red
-
-    table.cell(t, 0, 0, "🏆 VERDICT DU SETUP", text_color=color.yellow, text_size=size.small, bgcolor=color.new(#1e293b, 0))
-    table.cell(t, 1, 0, verdict, text_color=vCol, text_size=size.small, bgcolor=color.new(#1e293b, 0))
-    table.cell(t, 0, 1, "1. Taux de Réussite (Win Rate)", text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 1, str.tostring(wr, "#.1") + "% (" + str.tostring(tot) + " trades)", text_color=wr >= 50 ? color.lime : color.orange, text_size=size.small)
-    table.cell(t, 0, 2, "2. Profit Factor (Rentabilité)", text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 2, str.tostring(pf, "#.2") + (pf >= 1.5 ? " (Top ✅)" : " (Faible ⚠️)"), text_color=pf >= 1.5 ? color.lime : color.orange, text_size=size.small)
-    table.cell(t, 0, 3, "3. Gain Net ($ sur 100k$)", text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 3, (net >= 0 ? "+" : "") + str.tostring(net, "#,###") + " $", text_color=net >= 0 ? color.lime : color.red, text_size=size.small)
-    table.cell(t, 0, 4, "4. Score Macro Gold Actuel", text_color=color.white, text_size=size.small)
-    table.cell(t, 1, 4, (macroScore > 0 ? "🟢 HAUSSIER (+" : macroScore < 0 ? "🔴 BAISSIER (" : "⚪ NEUTRE (") + str.tostring(macroScore) + ")", text_color=macroScore >= 0 ? color.lime : color.red, text_size=size.small)
-    table.cell(t, 0, 5, "5. Fed (US10Y) & Dollar (DXY)", text_color=color.silver, text_size=size.tiny)
-    table.cell(t, 1, 5, (fedBull ? "Fed OK ✅ | " : "Fed Contre ❌ | ") + (dxyBull ? "DXY Faible ✅" : "DXY Fort ❌"), text_color=color.white, text_size=size.tiny)
-    table.cell(t, 0, 6, "6. Géopolitique & News USD", text_color=color.silver, text_size=size.tiny)
-    table.cell(t, 1, 6, inNews ? "🛑 ANNONCE EN COURS" : geoPanic ? "⚠️ VIX ÉLEVÉ (No Short)" : "✅ Voie Libre", text_color=inNews ? color.red : color.lime, text_size=size.tiny)`;
-
-  document.getElementById('pineCodePreview').textContent = code;
-}
-
-function copyPineScript() {
-  const code = document.getElementById('pineCodePreview').textContent;
-  navigator.clipboard.writeText(code);
-  showToast('✅ Pine Script Copied! Paste into TradingView Pine Editor');
+function expertBlock(R) {
+  const a = R.analysis;
+  if (!a) return '';
+  const ev = a.eventsInWindow;
+  const bd = Object.entries(a.breakdowns).filter(([, rows]) => rows.length > 1);
+  return `
+    <div class="bg-slate-950 rounded-2xl p-3 border border-yellow-500/30 space-y-2">
+      <div>
+        <div class="text-base font-bold text-yellow-300">🧠 Expert analysis</div>
+        <div class="text-xs text-slate-500">Why it worked or failed: news, sessions, trend, volatility.</div>
+      </div>
+      ${a.insights.map((i) => `
+        <div class="rounded-xl border p-3 ${TONE[i.tone].box}">
+          <div class="text-sm font-bold text-white">${TONE[i.tone].icon} ${i.title}</div>
+          <div class="text-sm text-slate-300 mt-1 leading-snug">${i.text}</div>
+        </div>`).join('')}
+      ${bd.map(([title, rows]) => `
+        <div class="pt-1">
+          <table class="w-full">${statsHead(title)}${rows.map((x) => statsRow(x.label, x.stats)).join('')}</table>
+        </div>`).join('')}
+      <details class="pt-1">
+        <summary class="text-sm font-semibold text-slate-300 cursor-pointer">Red-folder USD news in this window (${ev.length})</summary>
+        <div class="mt-2 space-y-1">
+          ${ev.map((e) => `<div class="flex justify-between text-xs text-slate-400"><span>${e.title}${e.approx ? ' <span class="text-slate-600">(≈ date)</span>' : ''}</span><span>${fmtDateTime(e.t)}</span></div>`).join('') || '<div class="text-xs text-slate-500">None</div>'}
+        </div>
+        <div class="text-xs text-slate-600 mt-2">Built-in schedule: FOMC, CPI, NFP. Dates marked ≈ are estimated.</div>
+      </details>
+    </div>`;
 }
 
 function sendLabSetupToTradePad() {
   renderTradePad();
   switchTab('trade');
-  showToast('⚡ Loaded Active Setup into Live Trade Pad!');
+  showToast(`Loaded ${currentStrategy().short} checklist into Trade Pad`);
 }
 
 // ============================================================================
@@ -777,7 +751,7 @@ function toggleNewsSimulation() {
 // TAB 3: TRADE PAD (PRE-TRADE CHECKLIST GATEKEEPER + XAUUSD LOT CALCULATOR)
 // ============================================================================
 function renderTradePad() {
-  const setup = SETUPS[state.lab.selectedSetupId];
+  const setup = currentStrategy();
   document.getElementById('activePadSetupTitle').textContent = setup.name;
 
   const container = document.getElementById('tradeChecklistContainer');
@@ -837,66 +811,83 @@ function setRiskPct(pct) {
   recalcOrderPad();
 }
 
+// Target R used by the pad ('Structure' falls back to 2R for sizing).
+function padRR() { return state.lab.rr === 'struct' ? 2 : state.lab.rr; }
+function padMarket() { return Aurum.MARKETS[state.lab.market]; }
+function padPrice() { return state.prices[state.lab.market]; }
+
 function recalcOrderPad() {
+  const mk = padMarket();
   const acct = parseFloat(document.getElementById('calcAccountSize').value || '100000');
-  const slDollars = parseFloat(document.getElementById('slDistSlider').value || '4.0');
+  const slider = document.getElementById('slDistSlider');
+  // Silver moves ~1/80th of gold in dollars: rescale the stop slider per market.
+  const range = mk.id === 'XAU' ? { min: 1.5, max: 15, step: 0.5, def: 4 } : { min: 0.02, max: 0.6, step: 0.01, def: 0.1 };
+  if (slider.dataset.market !== mk.id) {
+    Object.assign(slider, { min: range.min, max: range.max, step: range.step, value: range.def });
+    slider.dataset.market = mk.id;
+    document.getElementById('slMinLabel').textContent = `Tight ($${range.min})`;
+    document.getElementById('slMaxLabel').textContent = `Wide ($${range.max})`;
+  }
+  const slDollars = parseFloat(slider.value);
   const riskCash = acct * (state.pad.riskPct / 100.0);
+  const rr = padRR();
 
-  // On Standard Gold (XAUUSD = 100 oz), a $1.00 move = $100 per 1.00 Standard Lot
-  const lots = riskCash / (slDollars * 100.0);
-  const pips = Math.round(slDollars * 10);
+  // Lots = risk ÷ (stop distance in $ × ounces per lot). Gold: 100 oz, Silver: 5000 oz.
+  const lots = riskCash / (slDollars * mk.contractOz);
 
+  document.getElementById('padContractLabel').textContent = `${mk.ticker}: 1 lot = ${mk.contractOz.toLocaleString()} oz`;
+  document.getElementById('padCalcTitle').textContent = `Step 2 • ${mk.name} position size`;
   document.getElementById('calcRiskDollar').textContent = `$${riskCash.toLocaleString()}`;
-  document.getElementById('slDistLabel').textContent = `$${slDollars.toFixed(2)} (${pips} Pips)`;
+  document.getElementById('slDistLabel').textContent = `$${slDollars.toFixed(mk.decimals)}`;
   document.getElementById('outLotSize').textContent = lots.toFixed(2);
 
-  const tp1Price = (state.goldPrice + slDollars * 1.0).toFixed(2);
-  const tp2Price = (state.goldPrice + slDollars * state.lab.rrTarget).toFixed(2);
-  const tp1Cash  = Math.round(riskCash * 0.5);
-  const tp2Cash  = Math.round(riskCash * (state.lab.partialBE ? (0.5 * 1.0 + 0.5 * state.lab.rrTarget) : state.lab.rrTarget));
-
-  document.getElementById('outTP1').textContent = `+$${tp1Cash.toLocaleString()} (1R)`;
-  document.getElementById('outTP1Price').textContent = `@ ${tp1Price}`;
-  document.getElementById('outTP2').textContent = `+$${tp2Cash.toLocaleString()} (${state.lab.rrTarget}R)`;
-  document.getElementById('outTP2Price').textContent = `@ ${tp2Price}`;
+  const px = padPrice();
+  const tp2Cash = Math.round(riskCash * (state.lab.partialBE ? (0.5 + 0.5 * rr) : rr));
+  document.getElementById('outTP1').textContent = `+$${Math.round(riskCash * 0.5).toLocaleString()} (1R)`;
+  document.getElementById('outTP1Price').textContent = px ? `@ ${(px + slDollars).toFixed(mk.decimals)}` : 'long, from live price';
+  document.getElementById('outTP2').textContent = `+$${tp2Cash.toLocaleString()} (${rr}R)`;
+  document.getElementById('outTP2Price').textContent = px ? `@ ${(px + slDollars * rr).toFixed(mk.decimals)}` : '';
+  document.getElementById('outTP2Label').textContent = `FINAL TP (${rr}R)`;
 }
 
 function copyMT5Ticket() {
+  const mk = padMarket();
+  const px = padPrice();
+  if (!px) { showToast('Live price unavailable — add your API key in Backtest'); return; }
   const lots = document.getElementById('outLotSize').textContent;
-  const slDollars = parseFloat(document.getElementById('slDistSlider').value || '4.0');
-  const slPrice = (state.goldPrice - slDollars).toFixed(2);
-  const tpPrice = (state.goldPrice + slDollars * state.lab.rrTarget).toFixed(2);
-  const txt = `XAUUSD | Lots: ${lots} | Entry: ${state.goldPrice.toFixed(2)} | SL: ${slPrice} | TP: ${tpPrice} (${state.lab.rrTarget}R)`;
+  const slDollars = parseFloat(document.getElementById('slDistSlider').value);
+  const rr = padRR();
+  const txt = `${mk.ticker} BUY | Lots: ${lots} | Entry: ${px.toFixed(mk.decimals)} | SL: ${(px - slDollars).toFixed(mk.decimals)} | TP: ${(px + slDollars * rr).toFixed(mk.decimals)} (${rr}R)`;
   navigator.clipboard.writeText(txt);
-  showToast('📋 Copied Exact Gold Ticket to Clipboard!');
+  showToast(`Copied ${mk.ticker} ticket`);
 }
 
 function executeTrade(direction) {
-  const setup = SETUPS[state.lab.selectedSetupId];
+  const setup = currentStrategy();
+  const mk = padMarket();
   const lots = parseFloat(document.getElementById('outLotSize').textContent);
   const acct = parseFloat(document.getElementById('calcAccountSize').value || '100000');
   const riskCash = acct * (state.pad.riskPct / 100.0);
   const totalMacro = state.macroPillars.reduce((acc, p) => acc + p.score, 0);
+  const rr = padRR();
 
-  const newTrade = {
+  state.journal.unshift({
     id: Date.now(),
-    time: 'Just Now (NY Open)',
-    setup: setup.name,
+    time: new Date().toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
+    setup: `${mk.name} · ${setup.short}`,
     direction,
     lots,
-    entry: state.goldPrice,
+    entry: padPrice() || 0,
     grade: state.pad.checks.filter(Boolean).length === 5 ? 'A+' : 'B',
     macroScore: totalMacro >= 0 ? `+${totalMacro}` : `${totalMacro}`,
     compliant: true,
-    resultR: state.lab.rrTarget,
-    pnl: Math.round(riskCash * (state.lab.partialBE ? (0.5 + 0.5 * state.lab.rrTarget) : state.lab.rrTarget)),
-    notes: `Auto-logged via iPhone Trade Pad (${lots} Lots @ ${state.pad.riskPct}% Risk)`
-  };
-
-  state.journal.unshift(newTrade);
+    resultR: rr,
+    pnl: Math.round(riskCash * (state.lab.partialBE ? (0.5 + 0.5 * rr) : rr)),
+    notes: `Logged from Trade Pad (${lots} lots ${mk.ticker} @ ${state.pad.riskPct}% risk)`,
+  });
   renderJournal();
   switchTab('journal');
-  showToast(`🚀 Executed ${direction} ${lots} Lots XAUUSD & Auto-Journaled!`);
+  showToast(`Logged ${direction} ${lots} lots ${mk.ticker}`);
 }
 
 // ============================================================================
@@ -935,24 +926,55 @@ function cycleTradeOutcome(idx) {
     t.resultR = -1.0;
     t.pnl = -1000;
   } else {
-    t.resultR = state.lab.rrTarget;
-    t.pnl = Math.round(1000 * state.lab.rrTarget);
+    t.resultR = padRR();
+    t.pnl = Math.round(1000 * padRR());
   }
   renderJournal();
 }
 
-// Live Gold Price Micro-Ticker
-setInterval(() => {
-  const delta = (Math.random() - 0.48) * 0.45;
-  state.goldPrice = Math.max(2650, state.goldPrice + delta);
-  const el = document.getElementById('liveGoldPrice');
-  if (el) el.textContent = state.goldPrice.toFixed(2);
-}, 2200);
+// ============================================================================
+// LIVE PRICES (Twelve Data) + HEADER
+// ============================================================================
+function updateHeaderMarket() {
+  const mk = padMarket();
+  const tv = document.getElementById('tvFrame');
+  const sym = `OANDA:${mk.ticker}`;
+  if (tv && !tv.src.includes(encodeURIComponent(sym))) {
+    tv.src = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_xau&symbol=${encodeURIComponent(sym)}&interval=15&hidesidetoolbar=1&symboledit=1&saveimage=0&toolbarbg=0f172a&studies=%5B%5D&theme=dark&style=1&timezone=America%2FNew_York`;
+    document.getElementById('tvTitle').textContent = `TradingView — ${sym} (15m)`;
+  }
+}
+
+function renderPrices() {
+  for (const id of ['XAU', 'XAG']) {
+    const el = document.getElementById(`price${id}`);
+    const px = state.prices[id];
+    if (el) el.textContent = px ? px.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: Aurum.MARKETS[id].decimals }) : '—';
+  }
+}
+
+async function refreshLivePrices() {
+  if (!Aurum.data.getApiKey() || document.hidden) return;
+  try {
+    const [xau, xag] = await Promise.all([Aurum.data.getPrice('XAU'), Aurum.data.getPrice('XAG')]);
+    if (xau) state.prices.XAU = xau;
+    if (xag) state.prices.XAG = xag;
+    renderPrices();
+    recalcOrderPad();
+  } catch (e) { /* offline or rate-limited: keep last prices */ }
+}
+setInterval(refreshLivePrices, 5 * 60 * 1000);
 
 // Initialize App on Load
 window.addEventListener('DOMContentLoaded', () => {
+  loadLabPrefs();
+  state.lab.running = false;
+  state.lab.status = '';
   renderSetupLab();
   renderMacroRadar();
   renderTradePad();
   renderJournal();
+  updateHeaderMarket();
+  renderPrices();
+  refreshLivePrices();
 });
